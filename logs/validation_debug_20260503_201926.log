@@ -1,0 +1,1 @@
+2026-05-03T20:19:26.719840 | Damodaran validation columns found: industry=Industry Name, wacc=Cost of Capital, coe=Cost of Equity, cod=Cost of Debt, tax=Tax Rate; all_columns=['Industry Name', 'Number of Firms', 'Beta', 'Cost of Equity', 'E/(D+E)', 'Std Dev in Stock', 'Cost of Debt', 'Tax Rate', 'After-tax Cost of Debt', 'D/(D+E)', 'Cost of Capital', 'Cost of Capital (Euros)']

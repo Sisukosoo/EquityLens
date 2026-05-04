@@ -1,0 +1,5 @@
+2026-05-04T23:34:02.361494 | Validation run for industry=Oil & Gas Refining & Marketing, matched=Metals & Mining
+2026-05-04T23:34:02.381436 | {'Metric': 'Cost of Equity', 'Calculated': 0.07038677608392326, 'Damodaran (industry avg)': 0.0983995897223422, 'Difference': -0.02801281363841894, 'Status': '⚠ Review', 'Note': ''}
+2026-05-04T23:34:02.381900 | {'Metric': 'Cost of Debt', 'Calculated': 0.029128086419753087, 'Damodaran (industry avg)': 0.057413, 'Difference': -0.02828491358024691, 'Status': '⚠ Review', 'Note': 'Difference may reflect company-specific credit rating; investment-grade firms typically enjoy below-average debt costs'}
+2026-05-04T23:34:02.382509 | {'Metric': 'WACC', 'Calculated': 0.06140602801598008, 'Damodaran (industry avg)': 0.08535157903860636, 'Difference': -0.023945551022626285, 'Status': '⚠ Review', 'Note': ''}
+2026-05-04T23:34:02.382936 | {'Metric': 'Tax rate', 'Calculated': 0.27638190954773867, 'Damodaran (industry avg)': 0.25, 'Difference': 0.02638190954773867, 'Status': '✓ OK', 'Note': 'Effective tax rate within 5pp of Damodaran industry average'}

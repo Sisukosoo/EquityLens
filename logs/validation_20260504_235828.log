@@ -1,0 +1,5 @@
+2026-05-04T23:58:28.265185 | Validation run for industry=Drug Manufacturers - General, matched=Insurance (General)
+2026-05-04T23:58:28.266795 | {'Metric': 'Cost of Equity', 'Calculated': 0.1181270626172263, 'Damodaran (industry avg)': 0.06947008688394016, 'Difference': 0.048656975733286145, 'Status': '⚠ Review', 'Note': ''}
+2026-05-04T23:58:28.267586 | {'Metric': 'Cost of Debt', 'Calculated': 0.02025744268040807, 'Damodaran (industry avg)': 0.052913, 'Difference': -0.03265555731959193, 'Status': '⚠ Review', 'Note': 'Difference may reflect company-specific credit rating; investment-grade firms typically enjoy below-average debt costs'}
+2026-05-04T23:58:28.289010 | {'Metric': 'WACC', 'Calculated': 0.10985085854922229, 'Damodaran (industry avg)': 0.06339397763978913, 'Difference': 0.04645688090943316, 'Status': '⚠ Review', 'Note': ''}
+2026-05-04T23:58:28.290055 | {'Metric': 'Tax rate', 'Calculated': 0.177311930266106, 'Damodaran (industry avg)': 0.25, 'Difference': -0.072688069733894, 'Status': '✓ OK', 'Note': "Effective tax rate consistent with United States's corporate tax rate"}

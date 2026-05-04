@@ -1,0 +1,5 @@
+2026-05-03T20:29:35.670496 | Validation run for industry=Specialty Industrial Machinery, matched=Machinery
+2026-05-03T20:29:35.673029 | {'Metric': 'Cost of Equity', 'Calculated': 0.10478254394263026, 'Damodaran (industry avg)': 0.09834466187031116, 'Difference': 0.006437882072319101, 'Status': '✓ OK'}
+2026-05-03T20:29:35.673947 | {'Metric': 'Cost of Debt', 'Calculated': 0.04709173563352372, 'Damodaran (industry avg)': 0.055172, 'Difference': -0.008080264366476277, 'Status': '✓ OK'}
+2026-05-03T20:29:35.675370 | {'Metric': 'WACC', 'Calculated': 0.1027207250082258, 'Damodaran (industry avg)': 0.09250398685832754, 'Difference': 0.01021673814989825, 'Status': '✓ OK'}
+2026-05-03T20:29:35.695132 | {'Metric': 'Tax rate', 'Calculated': 0.25233644859813087, 'Damodaran (industry avg)': 0.2129456183793106, 'Difference': 0.039390830218820255, 'Status': '⚠ Review'}
