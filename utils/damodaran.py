@@ -45,6 +45,9 @@ INDUSTRY_WHITELIST = {
     "software infrastructure": "Software (System & Application)",
     "consumer electronics": "Electronics (Consumer & Office)",
     "semiconductors": "Semiconductor",
+    "drug manufacturers - general": "Drugs (Pharmaceutical)",
+    "drug manufacturers - specialty & generic": "Drugs (Pharmaceutical)",
+    "banks - diversified": "Bank (Money Center)",
 }
 
 
@@ -372,6 +375,7 @@ def match_industry_details(company_industry: str, damodaran_frame: pd.DataFrame)
                 "matching_method": "manual mapping",
             }
         )
+        _print_match_decision(company_industry, details)
         return details
 
     if process is not None and fuzz is not None:
@@ -390,6 +394,7 @@ def match_industry_details(company_industry: str, damodaran_frame: pd.DataFrame)
                 "matching_method": "fuzzy token_set_ratio",
             }
         )
+        _print_match_decision(company_industry, details)
         return details
 
     # Minimal fallback without rapidfuzz.
@@ -406,6 +411,7 @@ def match_industry_details(company_industry: str, damodaran_frame: pd.DataFrame)
             "matching_method": "difflib fallback",
         }
     )
+    _print_match_decision(company_industry, details)
     return details
 
 
@@ -465,6 +471,15 @@ def _print_top_matches(company_industry: str, choices: list[str]) -> None:
     ]
     for match, score in sorted(scored, key=lambda item: item[1], reverse=True)[:5]:
         print(f"  {match}: {score:.1f}")
+
+
+def _print_match_decision(company_industry: str, details: dict[str, Any]) -> None:
+    """Print the selected sector and matching method for debug diagnostics."""
+    print(
+        "Chosen Damodaran sector for "
+        f"'{company_industry}': {details.get('matched_industry')} "
+        f"({details.get('confidence', 0.0):.1f}%, {details.get('matching_method')})"
+    )
 
 
 def _whitelist_industry_match(company_industry: str, choices: list[str]) -> tuple[str, float] | None:

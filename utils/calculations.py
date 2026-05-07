@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import re
+from datetime import datetime
 from typing import Iterable
 
 import numpy as np
@@ -181,6 +182,10 @@ def build_balance_sheet_metrics(balance_sheet: pd.DataFrame) -> pd.DataFrame:
         ["Cash And Cash Equivalents", "Cash Cash Equivalents And Short Term Investments"],
     )
     debt = _find_line(balance_sheet, ["Total Debt", "Long Term Debt And Capital Lease Obligation"])
+    current_assets = _find_line(
+        balance_sheet,
+        ["Current Assets", "Total Current Assets"],
+    )
     current_liabilities = _find_line(
         balance_sheet,
         ["Current Liabilities", "Total Current Liabilities"],
@@ -194,6 +199,7 @@ def build_balance_sheet_metrics(balance_sheet: pd.DataFrame) -> pd.DataFrame:
         equity_raw = _series_value(total_equity, year)
         cash_raw = _series_value(cash, year) or 0
         debt_raw = _series_value(debt, year) or 0
+        current_assets_raw = _series_value(current_assets, year)
         current_liabilities_raw = _series_value(current_liabilities, year)
 
         rows.append(
@@ -205,6 +211,7 @@ def build_balance_sheet_metrics(balance_sheet: pd.DataFrame) -> pd.DataFrame:
                 "cash": _to_millions(cash_raw),
                 "debt": _to_millions(debt_raw),
                 "net_debt": _to_millions(debt_raw - cash_raw),
+                "current_assets": _to_millions(current_assets_raw),
                 "current_liabilities": _to_millions(current_liabilities_raw),
                 "equity_ratio": _percentage(equity_raw, assets_raw),
             }
@@ -469,19 +476,26 @@ def build_dividend_metrics(
     info = data.get("info", {})
     shares_outstanding = info.get("sharesOutstanding")
     current_price = info.get("currentPrice") or info.get("regularMarketPrice")
+    current_year = datetime.now().year
 
     rows = []
     for year, dividend_per_share in dividends.items():
+        year_int = int(year)
         net_income = None
+        payout_ratio_note = "Payout ratio unavailable - matching net income data not available from Yahoo Finance"
         if not income_metrics.empty and "year" in income_metrics.columns:
-            year_rows = income_metrics[income_metrics["year"] == int(year)]
+            year_rows = income_metrics[income_metrics["year"] == year_int]
             if not year_rows.empty:
                 net_income = year_rows.iloc[-1].get("net_income")
+                payout_ratio_note = "Payout ratio unavailable - net income is missing or zero"
 
         payout_ratio = None
         if shares_outstanding and net_income not in (None, 0):
             total_dividends_millions = float(dividend_per_share) * shares_outstanding / 1_000_000
             payout_ratio = total_dividends_millions / float(net_income) * 100
+            payout_ratio_note = "Calculated from annual dividends, shares outstanding, and same-year net income"
+        elif year_int == current_year:
+            payout_ratio_note = "Payout ratio unavailable - current-year dividend is year-to-date and FY net income is not available yet"
 
         dividend_yield = None
         if current_price not in (None, 0):
@@ -489,10 +503,12 @@ def build_dividend_metrics(
 
         rows.append(
             {
-                "year": int(year),
+                "year": year_int,
+                "period": f"FY{year_int} YTD" if year_int == current_year else f"FY{year_int}",
                 "dividend_per_share": float(dividend_per_share),
                 "payout_ratio": payout_ratio,
                 "dividend_yield": dividend_yield,
+                "payout_ratio_note": payout_ratio_note,
             }
         )
 

@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 from io import BytesIO
+import shutil
+import subprocess
+import tempfile
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
@@ -15,6 +19,7 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 from config import DATA_SOURCES, DISCLAIMER, current_timestamp
+from utils.logger import log_event
 
 
 DARK_BLUE = "16213E"
@@ -58,6 +63,9 @@ def build_valuation_excel_report(
     Limitation: forecasts are editable templates; automated assumptions require analyst review.
     """
     workbook = Workbook()
+    workbook.calculation.fullCalcOnLoad = True
+    workbook.calculation.forceFullCalc = True
+    workbook.calculation.calcMode = "auto"
     default = workbook.active
     workbook.remove(default)
 
@@ -76,7 +84,7 @@ def build_valuation_excel_report(
     _build_capm_sheet(sheets["CAPM"], valuation)
     _build_wacc_sheet(sheets["WACC"], valuation)
     _build_dcf_sheet(sheets["DCF"], income_metrics, cash_flow_metrics, valuation)
-    _build_validation_sheet(sheets["Validation"], validation_result, sanity_warnings)
+    _build_validation_sheet(sheets["Validation"], validation_result, sanity_warnings, valuation)
     _build_raw_data_sheet(sheets["Raw Data"], data, income_metrics, balance_metrics, cash_flow_metrics, beta_match)
 
     for sheet in sheets.values():
@@ -86,7 +94,64 @@ def build_valuation_excel_report(
     output = BytesIO()
     workbook.save(output)
     output.seek(0)
-    return output.getvalue()
+    return _recalculate_workbook_formulas(output.getvalue())
+
+
+def _find_libreoffice_executable() -> str | None:
+    """Locate a LibreOffice executable for headless workbook recalculation."""
+    for command in ("libreoffice", "soffice", "soffice.exe", "soffice.com"):
+        path = shutil.which(command)
+        if path:
+            return path
+    for candidate in (
+        Path(r"C:\Program Files\LibreOffice\program\soffice.exe"),
+        Path(r"C:\Program Files\LibreOffice\program\soffice.com"),
+        Path(r"C:\Program Files (x86)\LibreOffice\program\soffice.exe"),
+        Path(r"C:\Program Files (x86)\LibreOffice\program\soffice.com"),
+    ):
+        if candidate.exists():
+            return str(candidate)
+    return None
+
+
+def _recalculate_workbook_formulas(workbook_bytes: bytes) -> bytes:
+    """Populate cached Excel formula values with LibreOffice when available."""
+    executable = _find_libreoffice_executable()
+    if not executable:
+        log_event("LibreOffice not found; Excel formulas will recalculate when the workbook is opened.", "excel_warning")
+        return workbook_bytes
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            input_path = temp_path / "valuation_input.xlsx"
+            output_dir = temp_path / "recalculated"
+            output_dir.mkdir()
+            input_path.write_bytes(workbook_bytes)
+            subprocess.run(
+                [
+                    executable,
+                    "--headless",
+                    "--calc",
+                    "--convert-to",
+                    "xlsx",
+                    "--outdir",
+                    str(output_dir),
+                    str(input_path),
+                ],
+                check=True,
+                timeout=60,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            recalculated = output_dir / input_path.name
+            if not recalculated.exists():
+                log_event("LibreOffice recalc finished but no recalculated workbook was produced.", "excel_warning")
+                return workbook_bytes
+            return recalculated.read_bytes()
+    except Exception as exc:
+        log_event(f"LibreOffice formula recalc failed: {exc}", "excel_warning")
+        return workbook_bytes
 
 
 def _title(sheet, title: str) -> None:
@@ -232,6 +297,26 @@ def _price(cell, currency: str) -> None:
     cell.number_format = f'#,##0.00 "{currency}"'
 
 
+def _decimal_to_percentage_points(value: float | int | None) -> float | None:
+    """Convert a decimal difference to percentage points for display."""
+    if value is None or pd.isna(value):
+        return None
+    return float(value) * 100
+
+
+def _tier_status_text(tier: dict[str, Any]) -> str:
+    """Return report status text with a non-empty reason for accepted tiers."""
+    if tier.get("selected"):
+        reason = tier.get("acceptance_reason") or tier.get("selection_reason") or "within tier sanity limits"
+        return f"Used as primary result - {reason}"
+    status = tier.get("status") or "UNKNOWN"
+    if status == "ACCEPTED":
+        reason = tier.get("acceptance_reason") or "within tier sanity limits"
+        return f"ACCEPTED - {reason}"
+    reason = tier.get("rejection_reason") or tier.get("skip_message") or "no reason provided"
+    return f"{status} - {reason}"
+
+
 def _build_summary(sheet, data: dict, beta_match: Any, valuation: dict[str, Any]) -> None:
     """
     Build the Summary worksheet.
@@ -244,6 +329,9 @@ def _build_summary(sheet, data: dict, beta_match: Any, valuation: dict[str, Any]
     """
     _title(sheet, "Valuation Summary")
     info = data.get("info", {})
+    currency = valuation.get("currency", "")
+    selected = valuation.get("selected_dcf_tier") or {}
+    selected_dcf = valuation.get("dcf") or {}
     rows = [
         ("Company", info.get("longName") or info.get("shortName")),
         ("Ticker", data.get("ticker")),
@@ -255,17 +343,19 @@ def _build_summary(sheet, data: dict, beta_match: Any, valuation: dict[str, Any]
         ("Cost of Debt", valuation.get("cost_of_debt")),
         ("Cost of Debt Estimated", "YES" if valuation.get("cost_of_debt_estimated") else "NO"),
         ("WACC", valuation.get("wacc")),
-        ("Implied Share Price", "='DCF'!B34"),
-        ("Current Market Price", "='Raw Data'!B8"),
-        ("Upside / Downside", "='DCF'!B36"),
+        ("Selected estimate", selected_dcf.get("implied_price")),
+        ("Selected valuation tier", selected.get("method")),
+        ("Current Market Price", valuation.get("current_price")),
+        ("Upside / Downside", selected_dcf.get("upside")),
+        ("Confidence", _confidence_label(selected)),
+        ("Reason", selected.get("explanation") or valuation.get("dcf_selection_reason")),
     ]
     sheet.append(["Field", "Value"])
     _header(sheet["A2:B2"])
     for row in rows:
         sheet.append(list(row))
-    currency = valuation.get("currency", "")
     percent_rows = {"Cost of Equity", "Cost of Debt", "WACC", "Upside / Downside"}
-    price_rows = {"Implied Share Price", "Current Market Price"}
+    price_rows = {"Selected estimate", "Current Market Price"}
     for row_idx in range(3, 3 + len(rows)):
         label = sheet[f"A{row_idx}"].value
         if label in percent_rows:
@@ -274,11 +364,37 @@ def _build_summary(sheet, data: dict, beta_match: Any, valuation: dict[str, Any]
             _multiple(sheet[f"B{row_idx}"])
         if label in price_rows:
             _price(sheet[f"B{row_idx}"], currency)
-        if label in {"Implied Share Price", "Current Market Price", "Upside / Downside"}:
-            _formula(sheet[f"B{row_idx}"])
-        if label in {"WACC", "Implied Share Price"}:
+        if label in {"WACC", "Selected estimate"}:
             _result(sheet[f"B{row_idx}"])
-    navigation_row = 3 + len(rows) + 2
+
+    tier_start = 3 + len(rows) + 2
+    sheet[f"A{tier_start}"] = "Implied Share Price Analysis"
+    _subheader(sheet[f"A{tier_start}"])
+    tier_header = tier_start + 1
+    sheet[f"A{tier_header}"], sheet[f"B{tier_header}"], sheet[f"C{tier_header}"], sheet[f"D{tier_header}"] = (
+        "Method",
+        "Implied share price",
+        "Upside / downside",
+        "Status",
+    )
+    _header(sheet[f"A{tier_header}:D{tier_header}"])
+    for row_idx, tier in enumerate(valuation.get("dcf_tiers", []) or [], start=tier_header + 1):
+        dcf = tier.get("dcf") or {}
+        sheet[f"A{row_idx}"] = f"Tier {tier.get('tier')} - {tier.get('name')}"
+        sheet[f"B{row_idx}"] = dcf.get("implied_price")
+        sheet[f"C{row_idx}"] = dcf.get("upside")
+        sheet[f"D{row_idx}"] = _tier_status_text(tier)
+        _price(sheet[f"B{row_idx}"], currency)
+        _pct(sheet[f"C{row_idx}"])
+        if tier.get("selected"):
+            _result(sheet[f"B{row_idx}"])
+            sheet[f"D{row_idx}"].fill = PatternFill("solid", fgColor=STATUS_GREEN)
+            sheet[f"D{row_idx}"].font = Font(bold=True, color=STATUS_GREEN_TEXT)
+        elif tier.get("status") == "REJECTED":
+            sheet[f"D{row_idx}"].fill = PatternFill("solid", fgColor=STATUS_YELLOW)
+            sheet[f"D{row_idx}"].font = Font(bold=True, color=STATUS_YELLOW_TEXT)
+
+    navigation_row = tier_header + max(len(valuation.get("dcf_tiers", []) or []), 1) + 3
     sheet[f"A{navigation_row}"] = "Workbook navigation"
     sheet[f"B{navigation_row}"] = None
     _subheader(sheet[f"A{navigation_row}"])
@@ -464,99 +580,275 @@ def _build_dcf_sheet(sheet, income: pd.DataFrame, cash: pd.DataFrame, valuation:
     """
     currency = valuation.get("currency", "")
     _title(sheet, "DCF")
-    sheet["A3"] = "Assumptions"
+    sheet["A3"] = "Historical Data"
     _subheader(sheet["A3"])
-    historical_range = _period_range(income.tail(3))
-    latest_period = _latest_period(income)
-    assumptions = [
-        (
-            "Revenue growth % per year",
-            valuation.get("revenue_growth") if valuation.get("revenue_growth") is not None else 0.05,
-            valuation.get("revenue_growth_source") or "Fallback assumption (historical revenue data unavailable)",
-        ),
-        ("EBIT margin %", _safe_latest(income, "ebit_margin") / 100 if _safe_latest(income, "ebit_margin") else 0.12, f"{latest_period} actual"),
-        ("Tax rate", valuation.get("tax_rate"), f"Company effective tax rate {latest_period}"),
-        ("D&A % revenue", valuation.get("depreciation_pct_revenue") or 0.03, f"{latest_period} actual"),
-        ("CapEx % revenue", valuation.get("capex_pct_revenue") or 0.04, f"3-year historical average ({historical_range})"),
-        ("Working capital % revenue", valuation.get("working_capital_pct_revenue") or 0.02, "3-year historical average"),
-        ("Terminal growth rate", valuation.get("terminal_growth"), "Capped between 1.5% and 2.5% based on long-term economic growth assumptions"),
-        ("Discount rate = WACC", "='WACC'!B12", "WACC from CAPM + cost of debt"),
-    ]
-    sheet["C3"] = "Source"
-    _subheader(sheet["C3"])
-    for idx, row in enumerate(assumptions, start=4):
-        sheet[f"A{idx}"], sheet[f"B{idx}"], sheet[f"C{idx}"] = row
-        if idx <= 10:
-            _input(sheet[f"B{idx}"])
-        else:
-            _formula(sheet[f"B{idx}"])
-        _pct(sheet[f"B{idx}"])
-
-    sheet["A13"] = "Historical Data"
-    _subheader(sheet["A13"])
     sheet.append(["Period", "Revenue", "EBIT", "FCF"])
-    _header(sheet["A14:D14"])
-    hist = income.tail(3).merge(cash[["year", "free_cash_flow"]], on="year", how="left")
+    _header(sheet["A4:D4"])
+    hist = income.tail(5).merge(cash[["year", "free_cash_flow"]], on="year", how="left")
     for _, row in hist.iterrows():
         sheet.append([row.get("period") or row.get("year"), row.get("revenue"), row.get("ebit"), row.get("free_cash_flow")])
+    for row in range(5, 5 + len(hist)):
+        for col in range(2, 5):
+            _money(sheet.cell(row, col), currency)
 
-    start_row = 21
-    sheet[f"A{start_row}"] = "Forecast"
+    current_row = 7 + len(hist)
+    for tier in valuation.get("dcf_tiers", []) or []:
+        current_row = _write_dcf_tier_section(sheet, current_row, tier, valuation, currency)
+        current_row += 2
+
+    selected = valuation.get("selected_dcf_tier") or {}
+    selected_dcf = valuation.get("dcf") or {}
+    sheet[f"A{current_row}"] = "Final Selected Result"
+    _subheader(sheet[f"A{current_row}"])
+    final_rows = [
+        ("Selected tier", selected.get("method")),
+        ("Selected estimate", selected_dcf.get("implied_price")),
+        ("Current market price", valuation.get("current_price")),
+        ("Upside / downside", selected_dcf.get("upside")),
+        ("Confidence", _confidence_label(selected)),
+        ("Reason", selected.get("explanation") or valuation.get("dcf_selection_reason")),
+    ]
+    for row_idx, (label, value) in enumerate(final_rows, start=current_row + 1):
+        sheet[f"A{row_idx}"], sheet[f"B{row_idx}"] = label, value
+        if label in {"Selected estimate", "Current market price"}:
+            _price(sheet[f"B{row_idx}"], currency)
+        elif label == "Upside / downside":
+            _pct(sheet[f"B{row_idx}"])
+        if label == "Selected estimate":
+            _result(sheet[f"B{row_idx}"])
+    reverse_start = current_row + len(final_rows) + 2
+    _write_reverse_dcf_section(sheet, reverse_start, valuation)
+
+
+def _write_dcf_tier_section(sheet, start_row: int, tier: dict[str, Any], valuation: dict[str, Any], currency: str) -> int:
+    """Write one DCF tier's assumptions, forecast, and result to the DCF worksheet."""
+    if tier.get("tier") == 4:
+        return _write_multiples_tier_section(sheet, start_row, tier, currency)
+    if tier.get("tier") == 5:
+        return _write_tangible_book_tier_section(sheet, start_row, tier, currency)
+    title = f"Tier {tier.get('tier')} Assumptions - {tier.get('name')}"
+    sheet[f"A{start_row}"] = title
     _subheader(sheet[f"A{start_row}"])
-    headers = ["Year", "Revenue", "EBIT", "Tax", "D&A", "CapEx", "Delta WC", "FCF", "PV FCF"]
+    assumptions = tier.get("assumptions") or {}
+    assumption_rows = [
+        ("Revenue growth % per year", assumptions.get("revenue_growth"), assumptions.get("revenue_growth_source")),
+        ("EBIT margin %", assumptions.get("ebit_margin"), assumptions.get("ebit_margin_source")),
+        ("Tax rate", valuation.get("tax_rate"), "Company effective tax rate"),
+        ("D&A % revenue", assumptions.get("depreciation_pct_revenue"), assumptions.get("depreciation_source")),
+        ("CapEx % revenue", assumptions.get("capex_pct_revenue"), assumptions.get("capex_source")),
+        ("Working capital % revenue", assumptions.get("working_capital_pct_revenue"), assumptions.get("working_capital_source")),
+        ("Terminal growth rate", valuation.get("terminal_growth"), valuation.get("terminal_growth_source") or "Capped long-term growth assumption"),
+        ("Discount rate = WACC", valuation.get("wacc"), "WACC from CAPM + cost of debt"),
+    ]
+    header_row = start_row + 1
+    sheet[f"A{header_row}"], sheet[f"B{header_row}"], sheet[f"C{header_row}"] = "Assumption", "Value", "Source"
+    _header(sheet[f"A{header_row}:C{header_row}"])
+    for row_idx, row in enumerate(assumption_rows, start=header_row + 1):
+        sheet[f"A{row_idx}"], sheet[f"B{row_idx}"], sheet[f"C{row_idx}"] = row
+        _pct(sheet[f"B{row_idx}"])
+        _input(sheet[f"B{row_idx}"])
+
+    if tier.get("status") == "SKIPPED":
+        message_row = header_row + len(assumption_rows) + 2
+        sheet[f"A{message_row}"] = tier.get("skip_message") or "Tier skipped."
+        sheet[f"A{message_row}"].alignment = Alignment(wrap_text=True, vertical="top")
+        sheet.merge_cells(start_row=message_row, start_column=1, end_row=message_row, end_column=5)
+        status_row = message_row + 2
+        sheet[f"A{status_row}"], sheet[f"B{status_row}"] = "Status", _tier_status_text(tier)
+        return status_row + 1
+
+    forecast_start = header_row + len(assumption_rows) + 2
+    sheet[f"A{forecast_start}"] = f"Tier {tier.get('tier')} FCF projections"
+    _subheader(sheet[f"A{forecast_start}"])
+    headers = ["Year", "Revenue", "EBIT", "FCF", "PV FCF"]
     for col, header in enumerate(headers, start=1):
-        sheet.cell(start_row + 1, col).value = header
-    _header(sheet[f"A{start_row + 1}:I{start_row + 1}"])
-    latest_revenue_cell = f"B{14 + len(hist)}"
-    for i in range(1, 6):
-        row = start_row + 1 + i
-        previous_revenue = latest_revenue_cell if i == 1 else f"B{row - 1}"
-        sheet[f"A{row}"] = f"Year {i}"
-        sheet[f"B{row}"] = f"={previous_revenue}*(1+$B$4)"
-        sheet[f"C{row}"] = f"=B{row}*$B$5"
-        sheet[f"D{row}"] = f"=C{row}*$B$6"
-        sheet[f"E{row}"] = f"=B{row}*$B$7"
-        sheet[f"F{row}"] = f"=B{row}*$B$8"
-        sheet[f"G{row}"] = f"=(B{row}-{previous_revenue})*$B$9"
-        sheet[f"H{row}"] = f"=C{row}-D{row}+E{row}-F{row}-G{row}"
-        sheet[f"I{row}"] = f"=H{row}/(1+$B$11)^{i}"
-        for col in range(2, 10):
-            _formula(sheet.cell(row, col))
+        sheet.cell(forecast_start + 1, col).value = header
+    _header(sheet[f"A{forecast_start + 1}:E{forecast_start + 1}"])
+    dcf = tier.get("dcf") or {}
+    for row_idx, forecast in enumerate(dcf.get("forecast", []) or [], start=forecast_start + 2):
+        sheet[f"A{row_idx}"] = f"Year {forecast.get('year')}"
+        sheet[f"B{row_idx}"] = forecast.get("revenue")
+        sheet[f"C{row_idx}"] = forecast.get("ebit")
+        sheet[f"D{row_idx}"] = forecast.get("fcf")
+        sheet[f"E{row_idx}"] = forecast.get("pv_fcf")
+        for col in range(2, 6):
+            _money(sheet.cell(row_idx, col), currency)
 
-    out_row = start_row + 9
-    sheet[f"A{out_row}"], sheet[f"B{out_row}"] = "Terminal value", f"=H{start_row + 6}*(1+$B$10)/($B$11-$B$10)"
-    sheet[f"A{out_row + 1}"], sheet[f"B{out_row + 1}"] = "PV Terminal Value", f"=B{out_row}/(1+$B$11)^5"
-    sheet[f"A{out_row + 2}"], sheet[f"B{out_row + 2}"] = "Enterprise value", f"=SUM(I{start_row + 2}:I{start_row + 6})+B{out_row + 1}"
-    sheet[f"A{out_row + 3}"], sheet[f"B{out_row + 3}"] = "Equity value", f"=B{out_row + 2}-'WACC'!B4+'Raw Data'!B9"
-    raw_implied_price = (valuation.get("dcf") or {}).get("implied_price")
-    raw_implied_formula = f"B{out_row + 3}*1000000/'Raw Data'!B10"
-    sheet[f"A{out_row + 4}"], sheet[f"B{out_row + 4}"] = "Implied share price", f"=MAX(0,B{out_row + 3}*1000000/'Raw Data'!B10)"
-    sheet[f"C{out_row + 4}"] = (
-        f'=IF({raw_implied_formula}<0,'
-        f'"DCF model produced negative equity value ("&TEXT({raw_implied_formula},"0.00")&" {currency} raw); clamped to zero. '
-        'This indicates assumptions imply firm worthless under current trajectory; review Scenario tab",'
-        '"Calculated DCF result")'
+    result_row = forecast_start + 8
+    result_rows = [
+        ("Terminal value", dcf.get("terminal_value")),
+        ("PV terminal value", dcf.get("pv_terminal_value")),
+        ("Enterprise value", dcf.get("enterprise_value")),
+        ("Equity value", dcf.get("equity_value")),
+        ("Implied share price", dcf.get("implied_price")),
+        ("Upside / downside", dcf.get("upside")),
+        ("Status", _tier_status_text(tier)),
+    ]
+    for row_idx, (label, value) in enumerate(result_rows, start=result_row):
+        sheet[f"A{row_idx}"], sheet[f"B{row_idx}"] = label, value
+        if label in {"Terminal value", "PV terminal value", "Enterprise value", "Equity value"}:
+            _money(sheet[f"B{row_idx}"], currency)
+        elif label == "Implied share price":
+            _price(sheet[f"B{row_idx}"], currency)
+            if tier.get("selected"):
+                _result(sheet[f"B{row_idx}"])
+        elif label == "Upside / downside":
+            _pct(sheet[f"B{row_idx}"])
+    return result_row + len(result_rows)
+
+
+def _write_reverse_dcf_section(sheet, start_row: int, valuation: dict[str, Any]) -> int:
+    """Write Reverse DCF diagnostics below the selected valuation result."""
+    reverse = valuation.get("reverse_dcf") or {}
+    sheet[f"A{start_row}"] = "Reverse DCF Analysis"
+    _subheader(sheet[f"A{start_row}"])
+    header_row = start_row + 1
+    sheet[f"A{header_row}"], sheet[f"B{header_row}"], sheet[f"C{header_row}"] = "Metric", "Value", "Source"
+    _header(sheet[f"A{header_row}:C{header_row}"])
+    rows = [
+        (
+            "Implied growth rate from reverse DCF",
+            reverse.get("implied_growth"),
+            "pct",
+            "Solved from current market price using Tier 1 DCF inputs",
+        ),
+        (
+            "Tier 1 assumed growth rate",
+            reverse.get("tier1_growth"),
+            "pct",
+            f"Same as Tier 1 DCF assumption: {reverse.get('tier1_growth_source') or 'see Tier 1 Assumptions section'}",
+        ),
+        (
+            "Analyst consensus growth rate",
+            reverse.get("analyst_consensus_growth"),
+            "pct",
+            reverse.get("analyst_consensus_source") or "N/A - yfinance revenueGrowth/earningsGrowth unavailable",
+        ),
+        (
+            "Gap: implied vs Tier 1 assumed",
+            _decimal_to_percentage_points(reverse.get("growth_gap")),
+            "pp",
+            "Calculated: implied minus Tier 1 assumed (in percentage points)",
+        ),
+        (
+            "Interpretation",
+            reverse.get("interpretation") or reverse.get("message"),
+            "text",
+            "Generated from gap analysis logic",
+        ),
+    ]
+    for row_idx, (label, value, value_type, source) in enumerate(rows, start=header_row + 1):
+        sheet[f"A{row_idx}"], sheet[f"B{row_idx}"], sheet[f"C{row_idx}"] = label, value, source
+        if value_type == "pct":
+            _pct(sheet[f"B{row_idx}"])
+        elif value_type == "pp":
+            sheet[f"B{row_idx}"].number_format = '+0.0" pp";[Red]-0.0" pp";0.0" pp"'
+    return header_row + len(rows) + 1
+
+
+def _write_multiples_tier_section(sheet, start_row: int, tier: dict[str, Any], currency: str) -> int:
+    """Write Tier 4 multiples valuation details to the DCF worksheet."""
+    sheet[f"A{start_row}"] = "Tier 4 - Multiples-Based Valuation"
+    _subheader(sheet[f"A{start_row}"])
+    header_row = start_row + 1
+    sheet[f"A{header_row}"], sheet[f"B{header_row}"], sheet[f"C{header_row}"], sheet[f"D{header_row}"] = (
+        "Method",
+        "Multiple",
+        "Implied per share",
+        "Source",
     )
-    sheet[f"A{out_row + 5}"], sheet[f"B{out_row + 5}"] = "Current market price", valuation.get("current_price")
-    sheet[f"A{out_row + 6}"], sheet[f"B{out_row + 6}"] = "Upside / downside", f"=B{out_row + 4}/B{out_row + 5}-1"
-    sheet[f"A{out_row + 8}"], sheet[f"B{out_row + 8}"] = "Cross-check: Python implementation result", raw_implied_price
-    sheet[f"A{out_row + 9}"], sheet[f"B{out_row + 9}"] = "Cross-check upside / downside", (valuation.get("dcf") or {}).get("upside")
-    sheet[f"A{out_row + 10}"] = "Both should match the Excel formula result; a difference indicates calculation inconsistency."
-    for row in range(out_row, out_row + 7):
-        _formula(sheet[f"B{row}"])
-    for row in (out_row + 2, out_row + 3):
-        _money(sheet[f"B{row}"], currency)
-    _result(sheet[f"B{out_row + 4}"])
-    sheet[f"B{out_row + 4}"].number_format = "0.00"
-    _formula(sheet[f"C{out_row + 4}"])
-    sheet[f"C{out_row + 4}"].alignment = Alignment(vertical="top", wrap_text=True)
-    _pct(sheet[f"B{out_row + 6}"])
-    _money(sheet[f"B{out_row + 8}"], currency)
-    _pct(sheet[f"B{out_row + 9}"])
-    sheet[f"B{out_row + 9}"].number_format = "0.00%"
+    _header(sheet[f"A{header_row}:D{header_row}"])
+    row_idx = header_row + 1
+    for item in tier.get("multiples", []) or []:
+        sheet[f"A{row_idx}"] = item.get("method")
+        sheet[f"B{row_idx}"] = item.get("multiple")
+        sheet[f"C{row_idx}"] = item.get("implied_price")
+        source = item.get("source") or "N/A"
+        if item.get("error"):
+            source = f"{source} - {item.get('error')}"
+        sheet[f"D{row_idx}"] = source
+        _multiple(sheet[f"B{row_idx}"])
+        _price(sheet[f"C{row_idx}"], currency)
+        row_idx += 1
+    dcf = tier.get("dcf") or {}
+    median_source = f"Median of {tier.get('available_multiples', len(tier.get('multiples', []) or []))} methods"
+    sheet[f"A{row_idx}"], sheet[f"B{row_idx}"], sheet[f"C{row_idx}"], sheet[f"D{row_idx}"] = (
+        "Median (selected)",
+        "-",
+        dcf.get("implied_price"),
+        median_source,
+    )
+    _price(sheet[f"C{row_idx}"], currency)
+    if tier.get("selected"):
+        _result(sheet[f"C{row_idx}"])
+    row_idx += 1
+    sheet[f"A{row_idx}"] = "Status"
+    upside = dcf.get("upside")
+    if tier.get("status") == "ACCEPTED":
+        status_text = "ACCEPTED ✓"
+        if upside is not None:
+            status_text += f" ({upside:.0%} vs market, within 70% limit)"
+    else:
+        status_text = f"{tier.get('status')} - {tier.get('rejection_reason')}"
+    detail_status = tier.get("detail_status")
+    if detail_status and detail_status != "Full multiples set (3/3 available)":
+        status_text = f"{status_text}; {detail_status}"
+    if tier.get("selected"):
+        status_text = f"{status_text}; Used as primary result"
+    sheet[f"B{row_idx}"] = status_text
+    row_idx += 1
+    source = (tier.get("assumptions") or {}).get("source")
+    sheet[f"A{row_idx}"] = "Source"
+    sheet[f"B{row_idx}"] = source
+    return row_idx + 1
 
 
-def _build_validation_sheet(sheet, validation_result: dict[str, Any] | None, sanity_warnings: list[dict[str, str]]) -> None:
+def _write_tangible_book_tier_section(sheet, start_row: int, tier: dict[str, Any], currency: str) -> int:
+    """Write Tier 5 tangible book value floor details to the DCF worksheet."""
+    sheet[f"A{start_row}"] = "Tier 5 - Tangible Book Floor"
+    _subheader(sheet[f"A{start_row}"])
+    assumptions = tier.get("assumptions") or {}
+    rows = [
+        ("Total equity", assumptions.get("total_equity")),
+        ("Shares outstanding", assumptions.get("shares_outstanding") / 1_000_000 if assumptions.get("shares_outstanding") else None),
+        ("Book value/share", (tier.get("dcf") or {}).get("implied_price")),
+        ("Source", "Latest balance sheet equity / shares"),
+        ("Status", "Used as primary result" if tier.get("selected") else "Reference"),
+    ]
+    for row_idx, (label, value) in enumerate(rows, start=start_row + 1):
+        sheet[f"A{row_idx}"], sheet[f"B{row_idx}"] = label, value
+        if label == "Total equity":
+            _money(sheet[f"B{row_idx}"], currency)
+        elif label == "Shares outstanding":
+            sheet[f"B{row_idx}"].number_format = '#,##0.00 "M"'
+        elif label == "Book value/share":
+            _price(sheet[f"B{row_idx}"], currency)
+            if tier.get("selected"):
+                _result(sheet[f"B{row_idx}"])
+    return start_row + len(rows) + 1
+
+
+def _confidence_label(selected: dict[str, Any]) -> str:
+    """Return the user-facing confidence label for the selected DCF tier."""
+    confidence = str(selected.get("confidence") or "").upper()
+    tier = selected.get("tier")
+    if tier == 4:
+        return "LOW - multiples-based valuation; DCF model not applicable"
+    if tier == 5:
+        return "VERY LOW - tangible book value floor only"
+    if confidence == "LOW":
+        return "LOW - model relies on sector averages"
+    if confidence == "MODERATE":
+        return "MODERATE - model uses smoothed long-term averages"
+    return "NORMAL - standard DCF assumptions"
+
+
+def _build_validation_sheet(
+    sheet,
+    validation_result: dict[str, Any] | None,
+    sanity_warnings: list[dict[str, str]],
+    valuation: dict[str, Any],
+) -> None:
     """
     Build the Validation worksheet.
 
@@ -569,6 +861,7 @@ def _build_validation_sheet(sheet, validation_result: dict[str, Any] | None, san
     _title(sheet, "Validation")
     if not validation_result:
         sheet["A3"] = "Validation was not available."
+        _write_validation_dcf_tier_used(sheet, 5, valuation)
         return
     sheet["A3"] = f"Source: {validation_result.get('source_url')} - Updated {validation_result.get('source_updated')}"
     sheet.append(["Metric", "Calculated", "Damodaran (industry avg)", "Difference", "Status", "Note"])
@@ -621,12 +914,40 @@ def _build_validation_sheet(sheet, validation_result: dict[str, Any] | None, san
     for idx, warning in enumerate(sanity_warnings, start=start + 2):
         sheet[f"A{idx}"] = warning.get("severity")
         sheet[f"B{idx}"] = warning.get("message")
+
+    tier_row = start + 4 + len(sanity_warnings)
+    if valuation.get("selected_dcf_tier"):
+        _write_validation_dcf_tier_used(sheet, tier_row, valuation)
+        tier_row += 4
+
     if validation_result.get("explanations"):
-        expl_row = start + 4 + len(sanity_warnings)
+        expl_row = tier_row + 1
         sheet[f"A{expl_row}"] = "Possible explanations"
         _subheader(sheet[f"A{expl_row}"])
         for offset, text in enumerate(validation_result["explanations"], start=1):
             sheet[f"A{expl_row + offset}"] = text
+
+
+def _write_validation_dcf_tier_used(sheet, start_row: int, valuation: dict[str, Any]) -> None:
+    """Write the DCF tier selection diagnostic to the Validation worksheet."""
+    selected = valuation.get("selected_dcf_tier") or {}
+    if not selected:
+        return
+    sheet[f"A{start_row}"] = "Valuation Tier Used"
+    _subheader(sheet[f"A{start_row}"])
+    sheet[f"A{start_row + 1}"], sheet[f"B{start_row + 1}"] = "Severity", "Message"
+    _header(sheet[f"A{start_row + 1}:B{start_row + 1}"])
+    severity = "info"
+    if selected.get("tier") == 2:
+        severity = "warning"
+    elif selected.get("tier") == 3:
+        severity = "warning"
+    elif selected.get("tier") == 4:
+        severity = "warning"
+    elif selected.get("tier") == 5:
+        severity = "critical"
+    sheet[f"A{start_row + 2}"] = severity
+    sheet[f"B{start_row + 2}"] = selected.get("selection_reason") or valuation.get("dcf_selection_reason")
 
 
 def _build_raw_data_sheet(sheet, data: dict, income: pd.DataFrame, balance: pd.DataFrame, cash: pd.DataFrame, beta_match: Any) -> None:

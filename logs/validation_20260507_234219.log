@@ -1,0 +1,5 @@
+2026-05-07T23:42:19.118342 | Validation run for industry=Beverages - Non-Alcoholic, matched=Beverage (Soft)
+2026-05-07T23:42:19.120286 | {'Metric': 'Cost of Equity', 'Calculated': 0.07907441469681237, 'Damodaran (industry avg)': 0.06810950433285642, 'Difference': 0.010964910363955943, 'Status': '✓ OK', 'Note': ''}
+2026-05-07T23:42:19.121075 | {'Metric': 'Cost of Debt', 'Calculated': 0.03635804097423723, 'Damodaran (industry avg)': 0.052913, 'Difference': -0.016554959025762775, 'Status': '✓ OK', 'Note': ''}
+2026-05-07T23:42:19.121969 | {'Metric': 'WACC', 'Calculated': 0.07322735939748078, 'Damodaran (industry avg)': 0.06325671579570011, 'Difference': 0.009970643601780668, 'Status': '✓ OK', 'Note': ''}
+2026-05-07T23:42:19.131298 | {'Metric': 'Tax rate', 'Calculated': 0.1788348543567946, 'Damodaran (industry avg)': 0.25, 'Difference': -0.07116514564320539, 'Status': '✓ OK', 'Note': "Effective tax rate consistent with United States's corporate tax rate"}

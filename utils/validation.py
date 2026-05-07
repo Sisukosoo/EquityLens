@@ -354,24 +354,6 @@ def _lookup_metric(url: str, company_industry: str, metric: str) -> float | None
         return None
 
 
-def _validation_status(difference: float | None) -> str:
-    """
-    Classify a benchmark difference in percentage points.
-
-    Formula: abs(diff) thresholds <2pp OK, 2-5pp warning, >5pp fail.
-    Source: user-specified validation tolerance.
-    Example: 0.0102 -> OK; 0.035 -> review; 0.060 -> fail.
-    Required inputs: difference as decimal.
-    Limitation: ignores industry dispersion and confidence intervals.
-    """
-    if difference is None or pd.isna(difference):
-        return "No benchmark"
-    abs_diff = abs(difference)
-    if abs_diff < 0.02:
-        return "✓ OK"
-    if abs_diff <= 0.05:
-        return "⚠ Review"
-    return "✗ Check"
 def _tax_validation_status(
     calculated: float | None,
     benchmark: float | None,
@@ -441,7 +423,15 @@ def _source_filename(url: str) -> str:
 
 
 def _validation_status(difference: float | None) -> str:
-    """Classify a benchmark difference in percentage points."""
+    """
+    Classify a benchmark difference in percentage points.
+
+    Formula: abs(diff) thresholds <2pp OK, 2-5pp warning, >5pp fail.
+    Source: user-specified validation tolerance.
+    Example: 0.0102 -> OK; 0.035 -> review; 0.060 -> fail.
+    Required inputs: difference as decimal.
+    Limitation: ignores industry dispersion and confidence intervals.
+    """
     if difference is None or pd.isna(difference):
         return "No benchmark"
     abs_diff = abs(difference)

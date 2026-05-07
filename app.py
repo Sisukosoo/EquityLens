@@ -992,26 +992,107 @@ def render_validation_view(validation_result: dict | None) -> None:
 
 
 def render_dcf_result_summary(valuation: dict, currency_code: str) -> None:
-    """Render visible DCF output while preserving the raw Python cross-check signal."""
+    """Render selected DCF tier and all attempted tier outputs."""
     dcf = valuation.get("dcf") or {}
+    selected_tier = valuation.get("selected_dcf_tier") or {}
     raw_implied = dcf.get("implied_price")
-    visible_implied, was_clamped = clamped_implied_price(raw_implied)
     current_price = valuation.get("current_price")
-    visible_upside = None
-    if visible_implied is not None and current_price not in (None, 0):
-        visible_upside = visible_implied / current_price - 1
 
     cols = st.columns(3)
-    cols[0].metric("Implied share price", format_share_price(visible_implied, currency_code))
-    cols[1].metric("Raw Python cross-check", format_share_price(raw_implied, currency_code))
-    cols[2].metric("Upside / downside", format_percentage(visible_upside * 100 if visible_upside is not None else None))
+    cols[0].metric("Selected implied share price", format_share_price(raw_implied, currency_code))
+    cols[1].metric("Valuation method", selected_tier.get("method") or "N/A")
+    cols[2].metric("Upside / downside", format_percentage(dcf.get("upside") * 100 if dcf.get("upside") is not None else None))
+    render_dcf_tier_notice(valuation)
 
-    if was_clamped:
+    with st.expander("Show all valuation tier attempts", expanded=False):
+        tier_rows = []
+        for tier in valuation.get("dcf_tiers", []) or []:
+            tier_dcf = tier.get("dcf") or {}
+            tier_rows.append(
+                {
+                    "Tier": f"Tier {tier.get('tier')}",
+                    "Method": tier.get("name", ""),
+                    "Implied price": format_share_price(tier_dcf.get("implied_price"), currency_code),
+                    "Upside / downside": format_percentage(tier_dcf.get("upside") * 100 if tier_dcf.get("upside") is not None else None),
+                    "Status": "Used as primary result" if tier.get("selected") else tier.get("status", ""),
+                    "Reason": tier.get("selection_reason") or tier.get("rejection_reason") or "Passed sanity check",
+                }
+            )
+        if tier_rows:
+            st.dataframe(pd.DataFrame(tier_rows), use_container_width=True, hide_index=True)
+        else:
+            st.info("DCF tier diagnostics are not available for this run.")
+
+
+def render_dcf_tier_notice(valuation: dict | None) -> None:
+    """Show a prominent note for the selected valuation tier."""
+    if not valuation:
+        return
+    tier = valuation.get("dcf_tier")
+    selected = valuation.get("selected_dcf_tier") or {}
+    st.info(f"Selected valuation method: {selected.get('method') or 'N/A'}")
+    if tier == 2:
         st.warning(
-            f"DCF model produced a negative raw implied share price ({float(raw_implied):.2f} {currency_code}); "
-            "the user-facing value is clamped to 0.00. This is still an important signal: current assumptions imply "
-            "negative equity value under the modeled trajectory. Review the Scenario tab and DCF assumptions."
+            "⚠ DCF model uses smoothed long-term averages because recent financials show cyclical distortion. "
+            "Implied price has moderate confidence."
         )
+    elif tier == 3:
+        st.error(
+            "🚨 DCF model uses sector benchmark assumptions because company-specific data is not reliable for valuation. "
+            "Implied price has LOW confidence — review alternative valuation methods."
+        )
+    elif tier == 4:
+        st.warning(
+            "This company's recent financials don't support a standard DCF valuation. The estimate above uses "
+            "multiples comparison as an alternative method. Consider this estimate alongside the current market price, "
+            "which may reflect expectations not captured by historical data."
+        )
+    elif tier == 5:
+        st.error(
+            "This company's recent financials don't support a standard DCF valuation. The estimate above uses tangible "
+            "book value as an alternative floor. Consider this estimate alongside the current market price, which may "
+            "reflect expectations not captured by historical data."
+        )
+
+
+def render_reverse_dcf_analysis(valuation: dict | None) -> None:
+    """Render Reverse DCF implied growth diagnostics in the overview tab."""
+    st.markdown("#### Reverse DCF - Implied Growth Analysis")
+    # Reverse DCF is a diagnostic interpretation tool, not a valuation tier.
+    reverse = (valuation or {}).get("reverse_dcf") or {}
+    if not reverse:
+        st.info("Generate the valuation report to calculate reverse DCF implied growth.")
+        return
+    rows = [
+        {
+            "Metric": "Implied growth rate from reverse DCF",
+            "Value": _format_growth_rate(reverse.get("implied_growth")),
+        },
+        {
+            "Metric": "Tier 1 assumed growth rate",
+            "Value": _format_growth_rate(reverse.get("tier1_growth")),
+        },
+        {
+            "Metric": "Analyst consensus growth rate",
+            "Value": _format_growth_rate(reverse.get("analyst_consensus_growth")),
+        },
+        {
+            "Metric": "Gap: implied vs Tier 1 assumed",
+            "Value": _format_growth_gap(reverse.get("growth_gap")),
+        },
+    ]
+    _render_financial_table(["Metric", "Value"], rows)
+    st.caption(reverse.get("interpretation") or reverse.get("message") or "Reverse DCF diagnostic unavailable.")
+
+
+def _format_growth_rate(value: float | int | None) -> str:
+    """Format a decimal growth rate for UI display."""
+    return format_percentage(float(value) * 100 if value is not None and not pd.isna(value) else None)
+
+
+def _format_growth_gap(value: float | int | None) -> str:
+    """Format a decimal growth-rate difference as percentage points."""
+    return format_percentage_points(float(value) * 100 if value is not None and not pd.isna(value) else None)
 
 
 def render_valuation_sidebar(
@@ -1095,6 +1176,8 @@ def render_valuation_sidebar(
     except Exception as exc:
         st.error(f"Could not load required Damodaran cost-of-debt benchmark: {exc}")
         return
+    st.session_state["last_valuation"] = valuation
+    st.session_state["last_valuation_ticker"] = data.get("ticker")
     sanity_warnings = run_sanity_checks(valuation)
     critical = [warning for warning in sanity_warnings if warning["severity"] == "critical"]
     high_warnings = [warning for warning in sanity_warnings if warning["severity"] == "warning_high"]
@@ -1136,7 +1219,7 @@ def render_valuation_sidebar(
     if validation_result:
         validation_failures = [
             row for row in validation_result.get("rows", [])
-            if str(row.get("Status", "")).startswith("✗")
+            if "Check" in str(row.get("Status", ""))
         ]
     if validation_failures:
         st.error("Damodaran validation found one or more critical deviations above 5 percentage points.")
@@ -1428,6 +1511,7 @@ def render_analysis_overview(
     balance: pd.DataFrame,
     cash: pd.DataFrame,
     currency_code: str,
+    valuation: dict | None = None,
 ) -> None:
     """Render professional analyst-style summary."""
     overview = analysis["overview"]
@@ -1466,6 +1550,7 @@ def render_analysis_overview(
         ["Area", "Metric", "Value", "Unit", "Status"],
         scorecard_rows,
     )
+    render_reverse_dcf_analysis(valuation)
     render_latest_financials(income, balance, cash, currency_code)
 
 
@@ -1506,6 +1591,10 @@ def render_dividends(dividend_metrics: pd.DataFrame, currency_code: str) -> None
         create_dividend_chart(dividend_metrics, currency_code),
         use_container_width=True,
         config=chart_config("dividend_history"),
+    )
+    st.caption(
+        "Payout ratio is shown only for years where Yahoo Finance provides both dividend data and same-year net income. "
+        "Current-year dividends are year-to-date, so the payout ratio is hidden until full-year net income is available."
     )
     st.dataframe(dividend_metrics, use_container_width=True, hide_index=True)
 
@@ -1767,6 +1856,74 @@ def render_debug_view(data: dict, beta_match, damodaran_table: pd.DataFrame | No
     st.markdown("#### Used Damodaran values")
     _render_financial_table(["Metric", "Value", "Source file", "Source row"], used_rows)
 
+    valuation = st.session_state.get("last_valuation")
+    if st.session_state.get("last_valuation_ticker") == data.get("ticker") and valuation:
+        currency_code = reporting_currency(data)
+        dcf_rows = []
+        for tier in valuation.get("dcf_tiers", []) or []:
+            tier_dcf = tier.get("dcf") or {}
+            assumptions = tier.get("assumptions") or {}
+            reason = tier.get("selection_reason") or tier.get("rejection_reason") or "passed sanity check"
+            dcf_rows.append(
+                {
+                    "Metric": f"Tier {tier.get('tier')} attempted",
+                    "Value": (
+                        f"{format_share_price(tier_dcf.get('implied_price'), currency_code)} -> "
+                        f"{'ACCEPTED' if tier.get('selected') else tier.get('status', 'REJECTED')} ({reason})"
+                    ),
+                }
+            )
+            if tier.get("tier") == 3:
+                dcf_rows.extend(
+                    [
+                        {
+                            "Metric": "Tier 3 EBIT margin source",
+                            "Value": (
+                                f"{format_percentage((assumptions.get('ebit_margin') or 0) * 100)} | "
+                                f"{assumptions.get('ebit_margin_source') or 'N/A'} | "
+                                f"{assumptions.get('ebit_margin_source_file') or 'N/A'}"
+                            ),
+                        },
+                        {
+                            "Metric": "Tier 3 CapEx source",
+                            "Value": (
+                                f"{format_percentage((assumptions.get('capex_pct_revenue') or 0) * 100)} | "
+                                f"{assumptions.get('capex_source') or 'N/A'} | "
+                                f"{assumptions.get('capex_source_file') or 'N/A'}"
+                            ),
+                        },
+                    ]
+                )
+            if tier.get("tier") == 4:
+                dcf_rows.append(
+                    {
+                        "Metric": "Tier 4 data coverage",
+                        "Value": tier.get("detail_status") or "N/A",
+                    }
+                )
+                for item in tier.get("multiples", []) or []:
+                    source_parts = [
+                        format_multiple(item.get("multiple")),
+                        format_share_price(item.get("implied_price"), currency_code),
+                        item.get("source_file") or "N/A",
+                    ]
+                    if item.get("error"):
+                        source_parts.append(item.get("error"))
+                    else:
+                        source_parts.append(item.get("source") or "N/A")
+                    dcf_rows.append(
+                        {
+                            "Metric": f"Tier 4 {item.get('method')}",
+                            "Value": " | ".join(source_parts),
+                        }
+                    )
+        selected = valuation.get("selected_dcf_tier") or {}
+        if selected:
+            dcf_rows.append({"Metric": "Final", "Value": f"Tier {selected.get('tier')} ({selected.get('name')})"})
+        if dcf_rows:
+            st.markdown("#### DCF Tier Selection")
+            _render_financial_table(["Metric", "Value"], dcf_rows)
+
     with st.expander("Matched Damodaran row data"):
         st.json({str(key): str(value) for key, value in row_data.items()})
 
@@ -1786,6 +1943,8 @@ def render_single_company_analysis(data: dict, beta_match=None, damodaran_table:
     chart_benchmarks = extract_chart_benchmarks(beta_match)
 
     render_company_header(data)
+    if st.session_state.get("last_valuation_ticker") == data.get("ticker"):
+        render_dcf_tier_notice(st.session_state.get("last_valuation"))
     render_kpi_dashboard(kpis, kpi_history, fy_label)
 
     tab_names = [
@@ -1802,9 +1961,14 @@ def render_single_company_analysis(data: dict, beta_match=None, damodaran_table:
     if show_debug:
         tab_names.append("Debug")
     tabs = st.tabs(tab_names)
+    overview_valuation = (
+        st.session_state.get("last_valuation")
+        if st.session_state.get("last_valuation_ticker") == data.get("ticker")
+        else None
+    )
 
     with tabs[0]:
-        render_analysis_overview(analysis, income_metrics, balance_metrics, cash_flow_metrics, currency_code)
+        render_analysis_overview(analysis, income_metrics, balance_metrics, cash_flow_metrics, currency_code, overview_valuation)
         render_pdf_export(data, kpis, analysis, income_metrics, balance_metrics, cash_flow_metrics)
 
     with tabs[1]:

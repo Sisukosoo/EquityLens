@@ -1,0 +1,5 @@
+2026-05-07T10:32:02.305561 | Validation run for industry=Consumer Electronics, matched=Electronics (Consumer & Office)
+2026-05-07T10:32:02.306975 | {'Metric': 'Cost of Equity', 'Calculated': 0.09557134986046815, 'Damodaran (industry avg)': 0.07812261962427852, 'Difference': 0.017448730236189633, 'Status': '✓ OK', 'Note': ''}
+2026-05-07T10:32:02.307753 | {'Metric': 'Cost of Debt', 'Calculated': 0.03986539221748077, 'Damodaran (industry avg)': 0.060195, 'Difference': -0.02032960778251923, 'Status': '✓ OK', 'Note': ''}
+2026-05-07T10:32:02.308191 | {'Metric': 'WACC', 'Calculated': 0.09415752623037749, 'Damodaran (industry avg)': 0.07631357052138382, 'Difference': 0.017843955708993664, 'Status': '✓ OK', 'Note': ''}
+2026-05-07T10:32:02.327945 | {'Metric': 'Tax rate', 'Calculated': 0.15610002335586043, 'Damodaran (industry avg)': 0.25, 'Difference': -0.09389997664413957, 'Status': '⚠ Review', 'Note': 'Effective tax rate below standard marginal rate may reflect tax shields, carryforwards, or favorable jurisdictions; common for global tech and pharma companies'}

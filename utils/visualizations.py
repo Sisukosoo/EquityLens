@@ -125,14 +125,16 @@ def dividend_headline(latest_payout: float | None) -> str:
 
 def _year_axis(frame: pd.DataFrame) -> list[str]:
     """Return short fiscal year labels to prevent long axis text."""
+    if "period" in frame.columns:
+        labels = frame["period"].dropna()
+        if not labels.empty:
+            return frame["period"].fillna("").astype(str).str.split().str[:2].str.join(" ").tolist()
     if "year" in frame.columns:
         years = pd.to_numeric(frame["year"], errors="coerce")
         return [
             f"FY{int(year)}" if pd.notna(year) else str(frame.iloc[index].get("period", ""))
             for index, year in enumerate(years)
         ]
-    if "period" in frame.columns:
-        return frame["period"].astype(str).str.split().str[0].tolist()
     return frame["year"].astype(str).tolist()
 
 
@@ -508,7 +510,11 @@ def create_dividend_chart(dividend_metrics: pd.DataFrame, currency_code: str = "
             y=chart_data["dividend_per_share"],
             name="Dividend per share",
             marker_color=SLATE_BLUE,
-            hovertemplate=f"%{{x}}<br>DPS: %{{y:.2f}} {currency_code}<extra></extra>",
+            hovertemplate=f"%{{x}}<br>DPS: %{{y:.2f}} {currency_code}<br>%{{customdata}}<extra></extra>",
+            customdata=[
+                "Current-year dividend is year-to-date" if "YTD" in str(period) else "Annual dividend"
+                for period in chart_data.get("period", pd.Series([""] * len(chart_data)))
+            ],
         )
     )
     latest_payout = None

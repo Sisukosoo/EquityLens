@@ -13,6 +13,32 @@ from utils.logger import log_event
 
 MARKET_RISK_PREMIUM = 0.055
 DEFAULT_TERMINAL_GROWTH = 0.025
+STANDARD_DCF_MAX_DEVIATION = 0.70
+FALLBACK_DCF_MAX_DEVIATION = 0.70
+DCF_MARGIN_URLS = {
+    "europe": "https://pages.stern.nyu.edu/~adamodar/pc/datasets/marginEurope.xls",
+    "us": "https://pages.stern.nyu.edu/~adamodar/pc/datasets/margin.xls",
+}
+DCF_CAPEX_URLS = {
+    "europe": "https://pages.stern.nyu.edu/~adamodar/pc/datasets/capexEurope.xls",
+    "us": "https://pages.stern.nyu.edu/~adamodar/pc/datasets/capex.xls",
+}
+MULTIPLE_EV_EBITDA_URLS = {
+    # 2026-05-07: Damodaran Europe filenames are explicit and inconsistent;
+    # EV/EBITDA uses vebitEurope.xls, not a generated *dataEurope suffix.
+    "europe": "https://pages.stern.nyu.edu/~adamodar/pc/datasets/vebitEurope.xls",
+    "us": "https://pages.stern.nyu.edu/~adamodar/pc/datasets/vebitda.xls",
+}
+MULTIPLE_EV_SALES_URLS = {
+    # 2026-05-07: psdataEurope.xls returns 404; official Europe file is psEurope.xls.
+    "europe": "https://pages.stern.nyu.edu/~adamodar/pc/datasets/psEurope.xls",
+    "us": "https://pages.stern.nyu.edu/~adamodar/pc/datasets/psdata.xls",
+}
+MULTIPLE_PB_URLS = {
+    # 2026-05-07: pbvdataEurope.xls returns 404; official Europe file is pbvEurope.xls.
+    "europe": "https://pages.stern.nyu.edu/~adamodar/pc/datasets/pbvEurope.xls",
+    "us": "https://pages.stern.nyu.edu/~adamodar/pc/datasets/pbvdata.xls",
+}
 
 
 @dataclass
@@ -286,6 +312,8 @@ def build_valuation_result(
     income_tax = _value_or_none(latest_income.get("income_tax_expense"))
     revenue = _value_or_none(latest_income.get("revenue"))
     ebit_margin = _ratio_from_percent(latest_income.get("ebit_margin"))
+    ebitda = _value_or_none(latest_income.get("ebitda"))
+    total_equity = _value_or_none(latest_balance.get("total_equity"))
     fcf = _value_or_none(latest_cash.get("free_cash_flow")) or 0
     shares_outstanding = info.get("sharesOutstanding")
     current_price = info.get("currentPrice") or info.get("regularMarketPrice")
@@ -321,15 +349,26 @@ def build_valuation_result(
         tax_rate,
     )
 
-    dcf = {}
     revenue_growth, revenue_growth_source = _historical_revenue_growth_assumption(income_metrics)
     terminal_cagr = _historical_revenue_cagr(income_metrics, years=5)
-    working_capital_pct_revenue = _historical_working_capital_pct_revenue(income_metrics, balance_metrics)
+    terminal_cagr_source = _historical_revenue_cagr_source(income_metrics, years=5)
+    working_capital_pct_revenue, working_capital_source = _historical_working_capital_assumption(income_metrics, balance_metrics)
     terminal_growth = max(min(terminal_cagr, DEFAULT_TERMINAL_GROWTH), 0.015) if terminal_cagr is not None else DEFAULT_TERMINAL_GROWTH
+    terminal_growth_source = (
+        f"{terminal_cagr_source}; capped to 1.5%-2.5% terminal range"
+        if terminal_cagr is not None
+        else "Default terminal growth assumption"
+    )
     depreciation_pct_revenue = _historical_depreciation_pct_revenue(income_metrics)
     capex_pct_revenue = _historical_capex_pct_revenue(income_metrics, cash_flow_metrics)
+    dcf_tiers = []
+    dcf = {}
+    selected_tier = None
+    reverse_dcf = _build_unavailable_reverse_dcf(info, "Tier 1 Standard DCF inputs are unavailable.")
     if revenue is not None and ebit_margin is not None and shares_outstanding:
-        dcf = build_dcf_forecast(
+        dcf_tiers, selected_tier = _build_dcf_tier_results(
+            income_metrics=income_metrics,
+            cash_flow_metrics=cash_flow_metrics,
             latest_revenue=revenue,
             latest_ebit_margin=ebit_margin,
             latest_fcf=fcf,
@@ -337,25 +376,48 @@ def build_valuation_result(
             net_debt=net_debt,
             shares_outstanding=float(shares_outstanding),
             current_price=current_price,
-            revenue_growth=revenue_growth if revenue_growth is not None else 0.05,
             terminal_growth=terminal_growth,
             tax_rate=tax_rate,
-            depreciation_pct_revenue=depreciation_pct_revenue,
-            capex_pct_revenue=capex_pct_revenue,
             working_capital_pct_revenue=working_capital_pct_revenue,
+            working_capital_source=working_capital_source,
+            latest_ebitda=ebitda,
+            total_equity=total_equity,
+            standard_revenue_growth=revenue_growth,
+            standard_revenue_growth_source=revenue_growth_source,
+            standard_depreciation_pct_revenue=depreciation_pct_revenue,
+            standard_capex_pct_revenue=capex_pct_revenue,
+            beta_match=beta_match,
         )
+        dcf = selected_tier.get("dcf", {}) if selected_tier else {}
         print(
             "DCF debug "
             f"implied_price_streamlit={dcf.get('implied_price')}, "
             f"current_price={current_price}, "
             f"upside={dcf.get('upside')}, "
-            f"wacc={wacc}"
+            f"wacc={wacc}, "
+            f"tier={selected_tier.get('tier') if selected_tier else 'N/A'}"
         )
+        tier1 = next((tier for tier in dcf_tiers if tier.get("tier") == 1), None)
+        if tier1:
+            reverse_dcf = build_reverse_dcf_analysis(
+                info=info,
+                tier1=tier1,
+                latest_revenue=revenue,
+                latest_fcf=fcf,
+                wacc=wacc,
+                net_debt=net_debt,
+                shares_outstanding=float(shares_outstanding),
+                current_price=current_price,
+                terminal_growth=terminal_growth,
+                tax_rate=tax_rate,
+            )
+    selected_assumptions = (selected_tier or {}).get("assumptions", {})
 
     return {
         "currency": currency,
         "market_cap": market_cap,
         "total_debt": total_debt,
+        "total_equity": total_equity,
         "cash": cash,
         "net_debt": net_debt,
         "de_ratio": de_ratio,
@@ -365,12 +427,14 @@ def build_valuation_result(
         "cost_of_debt": cost_of_debt,
         "cost_of_debt_estimated": debt_estimated,
         "interest_expense_used": interest_expense,
-        "depreciation_pct_revenue": depreciation_pct_revenue,
-        "capex_pct_revenue": capex_pct_revenue,
-        "revenue_growth": revenue_growth,
-        "revenue_growth_source": revenue_growth_source,
+        "depreciation_pct_revenue": selected_assumptions.get("depreciation_pct_revenue", depreciation_pct_revenue),
+        "capex_pct_revenue": selected_assumptions.get("capex_pct_revenue", capex_pct_revenue),
+        "revenue_growth": selected_assumptions.get("revenue_growth", revenue_growth),
+        "revenue_growth_source": selected_assumptions.get("revenue_growth_source", revenue_growth_source),
         "terminal_growth_cagr": terminal_cagr,
-        "working_capital_pct_revenue": working_capital_pct_revenue,
+        "terminal_growth_source": terminal_growth_source,
+        "working_capital_pct_revenue": selected_assumptions.get("working_capital_pct_revenue", working_capital_pct_revenue),
+        "working_capital_source": selected_assumptions.get("working_capital_source", working_capital_source),
         "risk_free_rate": rf,
         "risk_free_date": risk_free.get("date"),
         "market_risk_premium": MARKET_RISK_PREMIUM,
@@ -385,7 +449,1010 @@ def build_valuation_result(
         "shares_outstanding": shares_outstanding,
         "current_price": current_price,
         "dcf": dcf,
+        "dcf_tiers": dcf_tiers,
+        "selected_dcf_tier": selected_tier,
+        "dcf_tier": (selected_tier or {}).get("tier"),
+        "dcf_tier_name": (selected_tier or {}).get("name"),
+        "dcf_confidence": (selected_tier or {}).get("confidence"),
+        "dcf_selection_reason": (selected_tier or {}).get("selection_reason"),
+        "dcf_model_not_appropriate": bool((selected_tier or {}).get("model_not_appropriate")),
+        "reverse_dcf": reverse_dcf,
     }
+
+
+def _build_dcf_tier_results(
+    income_metrics: pd.DataFrame,
+    cash_flow_metrics: pd.DataFrame,
+    latest_revenue: float,
+    latest_ebit_margin: float,
+    latest_fcf: float,
+    wacc: float,
+    net_debt: float,
+    shares_outstanding: float,
+    current_price: float | None,
+    terminal_growth: float,
+    tax_rate: float,
+    working_capital_pct_revenue: float,
+    working_capital_source: str,
+    latest_ebitda: float | None,
+    total_equity: float | None,
+    standard_revenue_growth: float | None,
+    standard_revenue_growth_source: str,
+    standard_depreciation_pct_revenue: float,
+    standard_capex_pct_revenue: float,
+    beta_match: Any,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Run the three DCF tiers and choose the first result that passes sanity gates."""
+    smoothed_margin, smoothed_margin_source = _historical_margin_assumption(income_metrics, "ebit_margin")
+    smoothed_growth = max(_historical_revenue_cagr(income_metrics, years=5, fallback=0.0) or 0.0, 0.0)
+    smoothed_growth_source = f"{_historical_revenue_cagr_source(income_metrics, years=5)}; floored at 0%"
+    smoothed_depreciation = _historical_depreciation_pct_revenue(income_metrics, years=5)
+    smoothed_capex = _historical_capex_pct_revenue(income_metrics, cash_flow_metrics, years=5)
+    sector_benchmarks = _load_dcf_sector_benchmarks(beta_match)
+    sector_margin = sector_benchmarks.get("ebit_margin")
+    sector_margin_source = sector_benchmarks.get("ebit_margin_source")
+    if sector_margin is None:
+        sector_margin = smoothed_margin
+        sector_margin_source = "company long-term average; sector EBIT margin unavailable"
+    sector_capex = sector_benchmarks.get("capex_pct_revenue")
+    sector_capex_source = sector_benchmarks.get("capex_source")
+    if sector_capex is None:
+        sector_capex = smoothed_capex
+        sector_capex_source = "company long-term average; sector CapEx benchmark unavailable"
+    sector_capex = abs(sector_capex)
+
+    tier_inputs = [
+        {
+            "tier": 1,
+            "name": "Standard DCF",
+            "method": "Tier 1 - standard",
+            "confidence": "NORMAL",
+            "max_deviation": STANDARD_DCF_MAX_DEVIATION,
+            "assumptions": {
+                "revenue_growth": standard_revenue_growth if standard_revenue_growth is not None else 0.05,
+                "revenue_growth_source": standard_revenue_growth_source,
+                "ebit_margin": latest_ebit_margin,
+                "ebit_margin_source": "latest FY actual",
+                "depreciation_pct_revenue": standard_depreciation_pct_revenue,
+                "depreciation_source": "recent historical average",
+                "capex_pct_revenue": standard_capex_pct_revenue,
+                "capex_source": "3-year historical average",
+                "working_capital_pct_revenue": working_capital_pct_revenue,
+                "working_capital_source": working_capital_source,
+            },
+        },
+        {
+            "tier": 2,
+            "name": "Smoothed DCF",
+            "method": "Tier 2 - smoothed long-term averages",
+            "confidence": "MODERATE",
+            "max_deviation": FALLBACK_DCF_MAX_DEVIATION,
+            "assumptions": {
+                "revenue_growth": smoothed_growth,
+                "revenue_growth_source": smoothed_growth_source,
+                "ebit_margin": smoothed_margin,
+                "ebit_margin_source": smoothed_margin_source,
+                "depreciation_pct_revenue": smoothed_depreciation,
+                "depreciation_source": "5-year historical average",
+                "capex_pct_revenue": smoothed_capex,
+                "capex_source": "5-year historical average",
+                "working_capital_pct_revenue": working_capital_pct_revenue,
+                "working_capital_source": working_capital_source,
+            },
+        },
+        {
+            "tier": 3,
+            "name": "Sector Benchmark DCF",
+            "method": "Tier 3 - sector benchmark",
+            "confidence": "LOW",
+            "max_deviation": FALLBACK_DCF_MAX_DEVIATION,
+            "assumptions": {
+                "revenue_growth": DEFAULT_TERMINAL_GROWTH,
+                "revenue_growth_source": "terminal-level 2.5% benchmark assumption",
+                "ebit_margin": sector_margin,
+                "ebit_margin_source": sector_margin_source,
+                "ebit_margin_matched_industry": sector_benchmarks.get("ebit_margin_matched_industry"),
+                "ebit_margin_source_url": sector_benchmarks.get("ebit_margin_source_url"),
+                "ebit_margin_source_file": sector_benchmarks.get("ebit_margin_source_file"),
+                "ebit_margin_source_row": sector_benchmarks.get("ebit_margin_source_row"),
+                "depreciation_pct_revenue": smoothed_depreciation,
+                "depreciation_source": "company 5-year historical average",
+                "capex_pct_revenue": sector_capex,
+                "capex_source": sector_capex_source,
+                "capex_source_url": sector_benchmarks.get("capex_source_url"),
+                "capex_source_file": sector_benchmarks.get("capex_source_file"),
+                "capex_source_row": sector_benchmarks.get("capex_source_row"),
+                "working_capital_pct_revenue": working_capital_pct_revenue,
+                "working_capital_source": working_capital_source,
+            },
+        },
+    ]
+
+    tiers = []
+    selected = None
+    for tier_input in tier_inputs:
+        if _should_skip_tier3_for_non_positive_sector_margin(tier_input):
+            tier = _build_skipped_tier3(tier_input)
+        else:
+            tier = _run_dcf_tier(
+                tier_input,
+                latest_revenue=latest_revenue,
+                latest_fcf=latest_fcf,
+                wacc=wacc,
+                net_debt=net_debt,
+                shares_outstanding=shares_outstanding,
+                current_price=current_price,
+                terminal_growth=terminal_growth,
+                tax_rate=tax_rate,
+            )
+        tiers.append(tier)
+        if selected is None and tier["accepted"]:
+            selected = tier
+
+    if selected is None:
+        tier4 = _build_multiples_tier(
+            beta_match=beta_match,
+            latest_revenue=latest_revenue,
+            latest_ebitda=latest_ebitda,
+            net_debt=net_debt,
+            shares_outstanding=shares_outstanding,
+            current_price=current_price,
+            total_equity=total_equity,
+        )
+        tiers.append(tier4)
+        if tier4["accepted"]:
+            selected = tier4
+        tier5 = _build_tangible_book_tier(
+            total_equity=total_equity,
+            shares_outstanding=shares_outstanding,
+            current_price=current_price,
+        )
+        tiers.append(tier5)
+        if selected is None:
+            selected = tier5
+
+    if selected is not None and selected.get("tier") == 5:
+        selected["selected"] = True
+        selected["selection_reason"] = "Cannot determine fair value with available methods; tangible book value is used as a theoretical floor."
+    elif selected is not None:
+        selected["selected"] = True
+        selected["selection_reason"] = _dcf_selection_reason(selected, tiers)
+
+    if selected:
+        selected["explanation"] = _dcf_tier_explanation(selected, tiers)
+    return tiers, selected or {}
+
+
+def _should_skip_tier3_for_non_positive_sector_margin(tier_input: dict[str, Any]) -> bool:
+    """Return True when Tier 3 has a non-positive Damodaran sector EBIT margin."""
+    if tier_input.get("tier") != 3:
+        return False
+    assumptions = tier_input.get("assumptions") or {}
+    margin = _value_or_none(assumptions.get("ebit_margin"))
+    source = assumptions.get("ebit_margin_source") or ""
+    return margin is not None and margin <= 0 and source.startswith("Damodaran sector benchmark")
+
+
+def _build_skipped_tier3(tier_input: dict[str, Any]) -> dict[str, Any]:
+    """Build a skipped Tier 3 result when sector benchmark margins are not applicable."""
+    assumptions = tier_input["assumptions"]
+    margin = _value_or_none(assumptions.get("ebit_margin"))
+    sector_name = assumptions.get("ebit_margin_matched_industry") or assumptions.get("ebit_margin_source") or "sector benchmark"
+    margin_text = f"{margin:.2%}" if margin is not None else "N/A"
+    message = (
+        "Tier 3 not applicable - Damodaran sector benchmark EBIT margin is non-positive "
+        f"({sector_name}: {margin_text}). This typically occurs in fragmented sectors with many "
+        "unprofitable small companies. A profitable target company is unlikely to be valued at sector-bottom margins."
+    )
+    return {
+        "tier": tier_input["tier"],
+        "name": tier_input["name"],
+        "method": tier_input["method"],
+        "confidence": tier_input["confidence"],
+        "assumptions": assumptions,
+        "dcf": {},
+        "accepted": False,
+        "selected": False,
+        "status": "SKIPPED",
+        "rejection_reason": "sector benchmark not applicable",
+        "acceptance_reason": "",
+        "skip_message": message,
+        "model_not_appropriate": False,
+    }
+
+
+def _run_dcf_tier(
+    tier_input: dict[str, Any],
+    latest_revenue: float,
+    latest_fcf: float,
+    wacc: float,
+    net_debt: float,
+    shares_outstanding: float,
+    current_price: float | None,
+    terminal_growth: float,
+    tax_rate: float,
+) -> dict[str, Any]:
+    """Calculate one DCF tier and attach acceptance diagnostics."""
+    assumptions = tier_input["assumptions"]
+    tier = {
+        "tier": tier_input["tier"],
+        "name": tier_input["name"],
+        "method": tier_input["method"],
+        "confidence": tier_input["confidence"],
+        "assumptions": assumptions,
+        "selected": False,
+        "model_not_appropriate": False,
+    }
+    try:
+        dcf = build_dcf_forecast(
+            latest_revenue=latest_revenue,
+            latest_ebit_margin=assumptions["ebit_margin"],
+            latest_fcf=latest_fcf,
+            wacc=wacc,
+            net_debt=net_debt,
+            shares_outstanding=shares_outstanding,
+            current_price=current_price,
+            revenue_growth=assumptions["revenue_growth"],
+            terminal_growth=terminal_growth,
+            tax_rate=tax_rate,
+            capex_pct_revenue=assumptions["capex_pct_revenue"],
+            depreciation_pct_revenue=assumptions["depreciation_pct_revenue"],
+            working_capital_pct_revenue=assumptions["working_capital_pct_revenue"],
+        )
+        tier["dcf"] = dcf
+        accepted, status, reason = _assess_dcf_result(dcf, current_price, tier_input["max_deviation"])
+    except Exception as exc:
+        tier["dcf"] = {}
+        accepted, status, reason = False, "REJECTED", f"calculation failed: {exc}"
+    tier["accepted"] = accepted
+    tier["status"] = "ACCEPTED" if accepted else status
+    tier["rejection_reason"] = "" if accepted else reason
+    tier["acceptance_reason"] = reason if accepted else ""
+    return tier
+
+
+def _assess_dcf_result(
+    dcf: dict[str, Any],
+    current_price: float | None,
+    max_deviation: float,
+) -> tuple[bool, str, str]:
+    """Return whether a DCF result passes the tier-specific sanity gate."""
+    implied_price = _value_or_none(dcf.get("implied_price"))
+    if implied_price is None:
+        return False, "REJECTED", "missing implied price"
+    if implied_price <= 0:
+        return False, "REJECTED", "negative or zero implied price"
+    if current_price in (None, 0) or pd.isna(current_price):
+        return True, "ACCEPTED", "accepted; market price unavailable for deviation check"
+    upside = implied_price / float(current_price) - 1
+    if abs(upside) > max_deviation:
+        direction = "downside" if upside < 0 else "upside"
+        return False, "REJECTED", f"{abs(upside):.1%} {direction} exceeds {max_deviation:.0%} tier limit"
+    return True, "ACCEPTED", f"within {max_deviation:.0%} of market price"
+
+
+def build_reverse_dcf_analysis(
+    info: dict[str, Any],
+    tier1: dict[str, Any],
+    latest_revenue: float,
+    latest_fcf: float,
+    wacc: float,
+    net_debt: float,
+    shares_outstanding: float,
+    current_price: float | None,
+    terminal_growth: float,
+    tax_rate: float,
+) -> dict[str, Any]:
+    """Build Reverse DCF diagnostics from Tier 1 assumptions; this is not a valuation tier."""
+    assumptions = tier1.get("assumptions") or {}
+    tier1_growth = assumptions.get("revenue_growth")
+    analyst_growth, analyst_source = _analyst_consensus_growth(info)
+    solved = solve_reverse_dcf_growth(
+        latest_revenue=latest_revenue,
+        latest_ebit_margin=assumptions.get("ebit_margin"),
+        latest_fcf=latest_fcf,
+        wacc=wacc,
+        net_debt=net_debt,
+        shares_outstanding=shares_outstanding,
+        current_price=current_price,
+        terminal_growth=terminal_growth,
+        tax_rate=tax_rate,
+        capex_pct_revenue=assumptions.get("capex_pct_revenue"),
+        depreciation_pct_revenue=assumptions.get("depreciation_pct_revenue"),
+        working_capital_pct_revenue=assumptions.get("working_capital_pct_revenue"),
+    )
+    implied_growth = solved.get("implied_growth")
+    gap = implied_growth - tier1_growth if implied_growth is not None and tier1_growth is not None else None
+    interpretation = _reverse_dcf_interpretation(implied_growth, tier1_growth, solved.get("message"))
+    return {
+        "implied_growth": implied_growth,
+        "tier1_growth": tier1_growth,
+        "tier1_growth_source": assumptions.get("revenue_growth_source"),
+        "analyst_consensus_growth": analyst_growth,
+        "analyst_consensus_source": analyst_source,
+        "growth_gap": gap,
+        "status": solved.get("status"),
+        "message": solved.get("message"),
+        "interpretation": interpretation,
+        "source": "Reverse DCF (solved from market price)",
+        "target_price": current_price,
+        "low_growth": solved.get("low_growth"),
+        "high_growth": solved.get("high_growth"),
+        "low_price": solved.get("low_price"),
+        "high_price": solved.get("high_price"),
+    }
+
+
+def solve_reverse_dcf_growth(
+    latest_revenue: float,
+    latest_ebit_margin: float | None,
+    latest_fcf: float,
+    wacc: float,
+    net_debt: float,
+    shares_outstanding: float,
+    current_price: float | None,
+    terminal_growth: float,
+    tax_rate: float,
+    capex_pct_revenue: float | None,
+    depreciation_pct_revenue: float | None,
+    working_capital_pct_revenue: float | None,
+    low_growth: float = -0.10,
+    high_growth: float = 0.50,
+) -> dict[str, Any]:
+    """
+    Solve the revenue growth rate implied by the current market price.
+
+    This reverse DCF holds Tier 1 Standard DCF inputs constant and solves only
+    the year 1-5 revenue growth rate. It is a diagnostic interpretation tool,
+    not a valuation tier and not a calibration of the existing 5-tier model.
+    """
+    required = {
+        "latest_revenue": latest_revenue,
+        "latest_ebit_margin": latest_ebit_margin,
+        "wacc": wacc,
+        "shares_outstanding": shares_outstanding,
+        "current_price": current_price,
+        "capex_pct_revenue": capex_pct_revenue,
+        "depreciation_pct_revenue": depreciation_pct_revenue,
+        "working_capital_pct_revenue": working_capital_pct_revenue,
+    }
+    missing = [key for key, value in required.items() if value is None or pd.isna(value)]
+    if missing:
+        return {
+            "implied_growth": None,
+            "status": "UNAVAILABLE",
+            "message": f"Reverse DCF unavailable: missing {', '.join(missing)}.",
+            "low_growth": low_growth,
+            "high_growth": high_growth,
+            "low_price": None,
+            "high_price": None,
+        }
+    if current_price <= 0 or shares_outstanding <= 0 or latest_revenue <= 0:
+        return {
+            "implied_growth": None,
+            "status": "UNAVAILABLE",
+            "message": "Reverse DCF unavailable: market price, shares, and revenue must be positive.",
+            "low_growth": low_growth,
+            "high_growth": high_growth,
+            "low_price": None,
+            "high_price": None,
+        }
+
+    def price_at_growth(growth: float) -> float:
+        return build_dcf_forecast(
+            latest_revenue=latest_revenue,
+            latest_ebit_margin=float(latest_ebit_margin),
+            latest_fcf=latest_fcf,
+            wacc=wacc,
+            net_debt=net_debt,
+            shares_outstanding=shares_outstanding,
+            current_price=current_price,
+            revenue_growth=growth,
+            terminal_growth=terminal_growth,
+            tax_rate=tax_rate,
+            capex_pct_revenue=float(capex_pct_revenue),
+            depreciation_pct_revenue=float(depreciation_pct_revenue),
+            working_capital_pct_revenue=float(working_capital_pct_revenue),
+        )["implied_price"]
+
+    try:
+        low_price = price_at_growth(low_growth)
+        high_price = price_at_growth(high_growth)
+        low_gap = low_price - current_price
+        high_gap = high_price - current_price
+        if abs(low_gap) < 1e-7:
+            implied_growth = low_growth
+        elif abs(high_gap) < 1e-7:
+            implied_growth = high_growth
+        elif low_gap * high_gap > 0:
+            if low_price > current_price and high_price > current_price:
+                message = "Market price implies negative growth beyond -10%."
+            else:
+                message = "Market price implies growth beyond 50% - likely irrational pricing."
+            return {
+                "implied_growth": None,
+                "status": "UNREACHABLE",
+                "message": message,
+                "low_growth": low_growth,
+                "high_growth": high_growth,
+                "low_price": low_price,
+                "high_price": high_price,
+            }
+        else:
+            implied_growth = _solve_brentq(lambda growth: price_at_growth(growth) - current_price, low_growth, high_growth)
+    except Exception as exc:
+        return {
+            "implied_growth": None,
+            "status": "FAILED",
+            "message": f"Reverse DCF solver failed to converge: {exc}",
+            "low_growth": low_growth,
+            "high_growth": high_growth,
+            "low_price": None,
+            "high_price": None,
+        }
+
+    return {
+        "implied_growth": implied_growth,
+        "status": "OK",
+        "message": "Reverse DCF solved successfully.",
+        "low_growth": low_growth,
+        "high_growth": high_growth,
+        "low_price": low_price,
+        "high_price": high_price,
+    }
+
+
+def _solve_brentq(function, low: float, high: float) -> float:
+    """Use scipy brentq when available, otherwise fall back to a deterministic bisection solver."""
+    try:
+        from scipy.optimize import brentq
+
+        return float(brentq(function, low, high, xtol=1e-6, maxiter=100))
+    except ImportError:
+        return _bisect_root(function, low, high)
+
+
+def _bisect_root(function, low: float, high: float, tolerance: float = 1e-6, max_iterations: int = 100) -> float:
+    """Small local fallback for environments where scipy is not installed."""
+    low_value = function(low)
+    high_value = function(high)
+    if low_value * high_value > 0:
+        raise ValueError("root is not bracketed")
+    for _ in range(max_iterations):
+        midpoint = (low + high) / 2
+        midpoint_value = function(midpoint)
+        if abs(midpoint_value) < tolerance or (high - low) / 2 < tolerance:
+            return float(midpoint)
+        if low_value * midpoint_value <= 0:
+            high = midpoint
+            high_value = midpoint_value
+        else:
+            low = midpoint
+            low_value = midpoint_value
+    raise ValueError("bisection did not converge")
+
+
+def _analyst_consensus_growth(info: dict[str, Any]) -> tuple[float | None, str]:
+    """Return yfinance analyst growth if available, without fabricating missing consensus data."""
+    for key in ("revenueGrowth", "earningsGrowth"):
+        value = _ratio_like_to_decimal((info or {}).get(key))
+        if value is not None:
+            return value, f"yfinance {key}"
+    recommendation = (info or {}).get("recommendationKey")
+    if recommendation:
+        return None, f"N/A - yfinance revenueGrowth/earningsGrowth unavailable; recommendationKey={recommendation}"
+    return None, "N/A - yfinance revenueGrowth/earningsGrowth unavailable"
+
+
+def _reverse_dcf_interpretation(implied_growth: float | None, tier1_growth: float | None, failure_message: str | None) -> str:
+    """Create the user-facing Reverse DCF interpretation."""
+    if implied_growth is None or tier1_growth is None:
+        return failure_message or "Reverse DCF could not solve an implied growth rate from the available inputs."
+    gap = implied_growth - tier1_growth
+    if abs(gap) <= 0.02:
+        return "Market pricing is consistent with model assumptions."
+    if gap > 0.02:
+        return "Market is pricing in higher growth than the model assumes - this explains the negative valuation gap."
+    return "Market is pricing in lower growth than the model assumes - the model may be overoptimistic."
+
+
+def _build_unavailable_reverse_dcf(info: dict[str, Any], message: str) -> dict[str, Any]:
+    """Return a complete Reverse DCF object when the diagnostic cannot be calculated."""
+    analyst_growth, analyst_source = _analyst_consensus_growth(info)
+    return {
+        "implied_growth": None,
+        "tier1_growth": None,
+        "tier1_growth_source": "N/A",
+        "analyst_consensus_growth": analyst_growth,
+        "analyst_consensus_source": analyst_source,
+        "growth_gap": None,
+        "status": "UNAVAILABLE",
+        "message": message,
+        "interpretation": message,
+        "source": "Reverse DCF (solved from market price)",
+        "target_price": None,
+        "low_growth": -0.10,
+        "high_growth": 0.50,
+        "low_price": None,
+        "high_price": None,
+    }
+
+
+def _dcf_selection_reason(selected: dict[str, Any], tiers: list[dict[str, Any]]) -> str:
+    """Explain why the selected DCF tier became the primary estimate."""
+    tier = selected.get("tier")
+    if tier == 1:
+        return "Standard DCF passed the primary sanity checks."
+    failed = [item for item in tiers if item.get("tier", 0) < tier]
+    failed_text = "; ".join(
+        f"Tier {item['tier']} {_tier_failure_verb(item)} ({item.get('rejection_reason', 'failed sanity check')})"
+        for item in failed
+    )
+    if tier == 2:
+        return f"Smoothed DCF selected because {failed_text}."
+    if tier == 3:
+        return f"Sector Benchmark DCF selected because {failed_text}."
+    if tier == 4:
+        return f"Multiples valuation selected because {failed_text}."
+    return selected.get("selection_reason", "")
+
+
+def _tier_failure_verb(tier: dict[str, Any]) -> str:
+    """Return a precise verb for non-selected tier diagnostics."""
+    return "skipped" if tier.get("status") == "SKIPPED" else "rejected"
+
+
+def _dcf_tier_explanation(selected: dict[str, Any], tiers: list[dict[str, Any]]) -> str:
+    """Build a concise user-facing explanation for fallback tiers."""
+    if selected.get("tier") == 1:
+        return "Standard DCF uses current company financials and passed sanity checks."
+    if selected.get("tier") == 4:
+        return "DCF model was not applicable; selected estimate uses the median of sector EV/EBITDA, EV/Sales, and P/Book valuation outputs."
+    if selected.get("tier") == 5:
+        return "Cannot determine fair value with available methods. Tangible book value provides a theoretical floor; market price reflects expectations not captured here."
+    tier1 = next((item for item in tiers if item.get("tier") == 1), {})
+    tier2 = next((item for item in tiers if item.get("tier") == 2), {})
+    latest_margin = (tier1.get("assumptions") or {}).get("ebit_margin")
+    smoothed_margin = (tier2.get("assumptions") or {}).get("ebit_margin")
+    selected_margin = (selected.get("assumptions") or {}).get("ebit_margin")
+    parts = []
+    if latest_margin is not None and smoothed_margin is not None:
+        parts.append(f"recent EBIT margin ({latest_margin:.2%}) vs long-term average ({smoothed_margin:.2%})")
+    if selected.get("tier") == 3 and selected_margin is not None:
+        parts.append(f"selected sector/benchmark margin ({selected_margin:.2%})")
+    if not parts:
+        return selected.get("selection_reason", "")
+    return (
+        "Fallback selected because "
+        + " and ".join(parts)
+        + "; company-specific recent financials appear distorted for point-in-time DCF."
+    )
+
+
+def _historical_margin_assumption(
+    income_metrics: pd.DataFrame,
+    column: str,
+    fallback: float | None = None,
+) -> tuple[float, str]:
+    """Return a 5-year margin average, falling back to 3-year and then latest margin."""
+    if fallback is None:
+        fallback = _ratio_from_percent(_latest_available_value(income_metrics, column)) or 0.12
+    if income_metrics.empty or column not in income_metrics.columns:
+        return fallback, "fallback margin assumption"
+    values = pd.to_numeric(income_metrics[column], errors="coerce").dropna() / 100
+    values = values[(values >= -0.5) & (values <= 0.8)]
+    if len(values) >= 5:
+        return float(values.tail(5).mean()), "5-year historical average"
+    if len(values) >= 3:
+        return float(values.tail(3).mean()), "3-year historical average"
+    if not values.empty:
+        return float(values.iloc[-1]), "latest available FY actual"
+    return fallback, "fallback margin assumption"
+
+
+def _load_dcf_sector_benchmarks(beta_match: Any) -> dict[str, Any]:
+    """
+    Load Damodaran margin and CapEx sector benchmarks for Tier 3 DCF.
+
+    Uses the same Damodaran workbook parser as beta loading; Streamlit gives
+    that parser a one-day cache.
+    """
+    margin = _lookup_damodaran_sector_metric(
+        beta_match,
+        DCF_MARGIN_URLS,
+        (
+            ("operating", "margin"),
+            ("pre", "tax", "operating", "margin"),
+            ("pretax", "operating", "margin"),
+        ),
+    )
+    capex = _lookup_damodaran_sector_metric(
+        beta_match,
+        DCF_CAPEX_URLS,
+        (
+            ("net", "cap", "ex", "sales"),
+            ("cap", "ex", "sales"),
+            ("capital", "expenditures", "sales"),
+            ("capex", "sales"),
+        ),
+    )
+    return {
+        "ebit_margin": margin.get("value"),
+        "ebit_margin_source": margin.get("source"),
+        "ebit_margin_source_url": margin.get("source_url"),
+        "ebit_margin_source_file": margin.get("source_file"),
+        "ebit_margin_source_row": margin.get("source_row"),
+        "ebit_margin_matched_industry": margin.get("matched_industry"),
+        "capex_pct_revenue": capex.get("value"),
+        "capex_source": capex.get("source"),
+        "capex_source_url": capex.get("source_url"),
+        "capex_source_file": capex.get("source_file"),
+        "capex_source_row": capex.get("source_row"),
+        "capex_matched_industry": capex.get("matched_industry"),
+    }
+
+
+def _build_multiples_tier(
+    beta_match: Any,
+    latest_revenue: float,
+    latest_ebitda: float | None,
+    net_debt: float,
+    shares_outstanding: float,
+    current_price: float | None,
+    total_equity: float | None,
+) -> dict[str, Any]:
+    """Build Tier 4 using Damodaran sector multiples."""
+    multiples = _load_sector_multiples(beta_match)
+    detail_rows = []
+    ev_ebitda = multiples.get("ev_ebitda")
+    ev_ebitda_error = multiples.get("ev_ebitda_error")
+    ev_ebitda_price = None
+    if ev_ebitda is not None and latest_ebitda is not None and latest_ebitda > 0:
+        enterprise_value = ev_ebitda * latest_ebitda
+        ev_ebitda_price = _equity_value_to_price(enterprise_value - net_debt, shares_outstanding)
+    elif ev_ebitda is not None:
+        ev_ebitda_error = "company TTM EBITDA unavailable or non-positive"
+    detail_rows.append(
+        _multiples_detail_row(
+            "EV/EBITDA",
+            ev_ebitda,
+            ev_ebitda_price,
+            multiples.get("ev_ebitda_source"),
+            multiples.get("ev_ebitda_source_file"),
+            ev_ebitda_error,
+        )
+    )
+
+    ev_sales = multiples.get("ev_sales")
+    ev_sales_error = multiples.get("ev_sales_error")
+    ev_sales_price = None
+    if ev_sales is not None and latest_revenue > 0:
+        enterprise_value = ev_sales * latest_revenue
+        ev_sales_price = _equity_value_to_price(enterprise_value - net_debt, shares_outstanding)
+    elif ev_sales is not None:
+        ev_sales_error = "company TTM revenue unavailable or non-positive"
+    detail_rows.append(
+        _multiples_detail_row(
+            "EV/Sales",
+            ev_sales,
+            ev_sales_price,
+            multiples.get("ev_sales_source"),
+            multiples.get("ev_sales_source_file"),
+            ev_sales_error,
+        )
+    )
+
+    pb = multiples.get("price_book")
+    pb_error = multiples.get("price_book_error")
+    tangible_book_price = _tangible_book_per_share(total_equity, shares_outstanding)
+    pb_price = None
+    if pb is not None and tangible_book_price is not None and tangible_book_price > 0:
+        pb_price = pb * tangible_book_price
+    elif pb is not None:
+        pb_error = "book value per share unavailable or non-positive"
+    detail_rows.append(
+        _multiples_detail_row(
+            "P/Book",
+            pb,
+            pb_price,
+            multiples.get("price_book_source"),
+            multiples.get("price_book_source_file"),
+            pb_error,
+        )
+    )
+
+    clean_estimates = sorted(
+        float(item["implied_price"])
+        for item in detail_rows
+        if item.get("implied_price") is not None and not pd.isna(item.get("implied_price")) and float(item["implied_price"]) > 0
+    )
+    implied_price = _median(clean_estimates) if clean_estimates else None
+    dcf_like = _valuation_output(implied_price, current_price)
+    accepted, status, reason = _assess_dcf_result(dcf_like, current_price, FALLBACK_DCF_MAX_DEVIATION)
+    available_count = len(clean_estimates)
+    if available_count == 0:
+        accepted = False
+        status = "REJECTED"
+        reason = "data unavailable"
+    if accepted and tangible_book_price is not None and implied_price is not None and implied_price <= 0.5 * tangible_book_price:
+        accepted = False
+        status = "REJECTED"
+        reason = "multiples estimate is below 50% of tangible book value"
+    detail_status = _multiples_detail_status(available_count)
+    tier = {
+        "tier": 4,
+        "name": "Multiples-Based Valuation",
+        "method": "Tier 4 - multiples valuation",
+        "confidence": "LOW",
+        "selected": False,
+        "accepted": accepted,
+        "status": "ACCEPTED" if accepted else status,
+        "rejection_reason": "" if accepted else reason,
+        "detail_status": detail_status,
+        "available_multiples": available_count,
+        "assumptions": {
+            "source": "Sector multiples (median of EV/EBITDA, EV/Sales, P/Book)",
+            "tangible_book_per_share": tangible_book_price,
+            **multiples,
+        },
+        "multiples": detail_rows,
+        "dcf": dcf_like,
+    }
+    return tier
+
+
+def _multiples_detail_row(
+    method: str,
+    multiple: float | None,
+    implied_price: float | None,
+    source: str | None,
+    source_file: str | None,
+    error: str | None,
+) -> dict[str, Any]:
+    """Return one Tier 4 row, including unavailable-data diagnostics."""
+    row_error = error
+    if multiple is None and not row_error:
+        row_error = "Damodaran multiple unavailable"
+    if implied_price is not None and (pd.isna(implied_price) or float(implied_price) <= 0):
+        row_error = "implied price is non-positive"
+    row_status = "AVAILABLE" if multiple is not None and implied_price is not None and not pd.isna(implied_price) and float(implied_price) > 0 else "UNAVAILABLE"
+    return {
+        "method": method,
+        "multiple": multiple,
+        "implied_price": implied_price,
+        "source": source or ("Unavailable" if row_error else None),
+        "source_file": source_file,
+        "status": row_status,
+        "error": row_error or "",
+    }
+
+
+def _multiples_detail_status(available_count: int) -> str:
+    """Return the user-facing Tier 4 data coverage status."""
+    if available_count == 3:
+        return "Full multiples set (3/3 available)"
+    if available_count == 2:
+        return "Limited multiples (2/3 available)"
+    if available_count == 1:
+        return "Limited multiples (only 1/3 available)"
+    return "REJECTED (data unavailable)"
+
+
+def _build_tangible_book_tier(
+    total_equity: float | None,
+    shares_outstanding: float,
+    current_price: float | None,
+) -> dict[str, Any]:
+    """Build Tier 5 tangible book value floor."""
+    implied_price = _tangible_book_per_share(total_equity, shares_outstanding)
+    dcf_like = _valuation_output(implied_price, current_price)
+    return {
+        "tier": 5,
+        "name": "Tangible Book Value Floor",
+        "method": "Tier 5 - tangible book floor",
+        "confidence": "VERY LOW",
+        "selected": False,
+        "accepted": implied_price is not None and implied_price > 0,
+        "status": "REFERENCE",
+        "rejection_reason": "",
+        "assumptions": {
+            "source": "Tangible book value per share (liquidation floor)",
+            "total_equity": total_equity,
+            "shares_outstanding": shares_outstanding,
+        },
+        "dcf": dcf_like,
+    }
+
+
+def _load_sector_multiples(beta_match: Any) -> dict[str, Any]:
+    """Load Damodaran sector EV/EBITDA, EV/Sales, and P/Book multiples."""
+    ev_ebitda = _lookup_damodaran_sector_metric(
+        beta_match,
+        MULTIPLE_EV_EBITDA_URLS,
+        (
+            ("ev", "ebitda"),
+            ("enterprise", "value", "ebitda"),
+            ("value", "ebitda"),
+        ),
+        ratio=False,
+    )
+    ev_sales = _lookup_damodaran_sector_metric(
+        beta_match,
+        MULTIPLE_EV_SALES_URLS,
+        (
+            ("ev", "sales"),
+            ("enterprise", "value", "sales"),
+            ("value", "sales"),
+            ("price", "sales"),
+            ("p", "sales"),
+        ),
+        ratio=False,
+    )
+    price_book = _lookup_damodaran_sector_metric(
+        beta_match,
+        MULTIPLE_PB_URLS,
+        (
+            ("price", "book"),
+            ("price", "book", "value"),
+            ("pbv",),
+            ("p", "bv"),
+            ("p", "book"),
+            ("market", "book"),
+        ),
+        ratio=False,
+    )
+    return {
+        "ev_ebitda": ev_ebitda.get("value"),
+        "ev_ebitda_source": ev_ebitda.get("source"),
+        "ev_ebitda_source_file": ev_ebitda.get("source_file"),
+        "ev_ebitda_source_url": ev_ebitda.get("source_url"),
+        "ev_ebitda_error": ev_ebitda.get("error"),
+        "ev_sales": ev_sales.get("value"),
+        "ev_sales_source": ev_sales.get("source"),
+        "ev_sales_source_file": ev_sales.get("source_file"),
+        "ev_sales_source_url": ev_sales.get("source_url"),
+        "ev_sales_error": ev_sales.get("error"),
+        "price_book": price_book.get("value"),
+        "price_book_source": price_book.get("source"),
+        "price_book_source_file": price_book.get("source_file"),
+        "price_book_source_url": price_book.get("source_url"),
+        "price_book_error": price_book.get("error"),
+    }
+
+
+def _lookup_damodaran_sector_metric(
+    beta_match: Any,
+    urls: dict[str, str],
+    column_fragment_sets: tuple[tuple[str, ...], ...],
+    ratio: bool = True,
+) -> dict[str, Any]:
+    """Look up one DCF sector benchmark from a Damodaran dataset."""
+    from utils.damodaran import _source_filename, load_damodaran_table, match_industry
+
+    region = "europe" if getattr(beta_match, "source_region", "") == "europe" else "us"
+    url = urls[region]
+    source_file = _source_filename(url)
+    try:
+        raw = load_damodaran_table(url)
+        industry_col = _find_damodaran_column(raw, (("industry", "name"), ("industry",)))
+        value_col = _find_damodaran_column(raw, column_fragment_sets)
+        if industry_col is None:
+            return {"error": f"industry column unavailable in {source_file}", "source_url": url, "source_file": source_file}
+        if value_col is None:
+            return {"error": f"target metric column unavailable in {source_file}", "source_url": url, "source_file": source_file}
+        table = pd.DataFrame()
+        table["industry"] = raw[industry_col].astype(str).str.strip()
+        converter = _ratio_like_to_decimal if ratio else _value_or_none
+        table["value"] = raw[value_col].map(converter)
+        table["raw_index"] = raw.index
+        table = table.dropna(subset=["value"])
+        table = table[table["industry"].str.len() > 0]
+        table = table[~table["industry"].str.lower().isin({"nan", "industry", "industry name"})]
+        if table.empty:
+            return {"error": f"no usable sector rows in {source_file}", "source_url": url, "source_file": source_file}
+        lookup_industry = getattr(beta_match, "matched_industry", "") or getattr(beta_match, "company_industry", "")
+        matched_industry, confidence = match_industry(lookup_industry, table)
+        row = table[table["industry"] == matched_industry]
+        if row.empty:
+            return {"error": f"sector match unavailable in {source_file}: {lookup_industry}", "source_url": url, "source_file": source_file}
+        row_data = row.iloc[0].to_dict()
+        source_label = f"Damodaran sector benchmark: {matched_industry}"
+        raw_index = row_data.get("raw_index")
+        return {
+            "value": float(row_data["value"]),
+            "source": source_label,
+            "source_url": url,
+            "source_file": source_file,
+            "source_row": int(raw_index) if raw_index is not None and not pd.isna(raw_index) else None,
+            "matched_industry": matched_industry,
+            "confidence": confidence,
+            "column": str(value_col),
+            "error": "",
+        }
+    except Exception as exc:
+        log_event(f"DCF sector benchmark lookup failed: url={url} | {exc}", "valuation_warning")
+        return {"error": f"load failed for {source_file}: {exc}", "source_url": url, "source_file": source_file}
+
+
+def _find_damodaran_column(frame: pd.DataFrame, fragment_sets: tuple[tuple[str, ...], ...]) -> str | None:
+    """Find a Damodaran column whose normalized name contains every fragment in one set."""
+    normalized_columns = {str(column): _normalize_text(column) for column in frame.columns}
+    for fragments in fragment_sets:
+        normalized_fragments = [_normalize_text(fragment) for fragment in fragments]
+        matches = []
+        for column, key in normalized_columns.items():
+            if all(fragment in key for fragment in normalized_fragments):
+                matches.append((len(key), column))
+        if matches:
+            matches.sort(key=lambda item: item[0])
+            return matches[0][1]
+    return None
+
+
+def _normalize_text(value: Any) -> str:
+    """Normalize loose Damodaran labels for column matching."""
+    return "".join(ch for ch in str(value).lower() if ch.isalnum())
+
+
+def _equity_value_to_price(equity_value_millions: float | None, shares_outstanding: float | None) -> float | None:
+    """Convert equity value in millions to per-share price."""
+    if equity_value_millions is None or shares_outstanding in (None, 0):
+        return None
+    return float(equity_value_millions) * 1_000_000 / float(shares_outstanding)
+
+
+def _tangible_book_per_share(total_equity: float | None, shares_outstanding: float | None) -> float | None:
+    """Return book value per share from latest balance-sheet equity."""
+    return _equity_value_to_price(total_equity, shares_outstanding)
+
+
+def _valuation_output(implied_price: float | None, current_price: float | None) -> dict[str, Any]:
+    """Return a valuation result with the same key shape used by DCF outputs."""
+    upside = None
+    if implied_price is not None and current_price not in (None, 0) and not pd.isna(current_price):
+        upside = implied_price / float(current_price) - 1
+    return {
+        "forecast": [],
+        "terminal_value": None,
+        "pv_terminal_value": None,
+        "enterprise_value": None,
+        "equity_value": None,
+        "implied_price": implied_price,
+        "upside": upside,
+        "latest_fcf": None,
+    }
+
+
+def _median(values: list[float]) -> float | None:
+    """Return median for a non-empty numeric list."""
+    if not values:
+        return None
+    midpoint = len(values) // 2
+    if len(values) % 2 == 1:
+        return float(values[midpoint])
+    return float((values[midpoint - 1] + values[midpoint]) / 2)
+
+
+def _find_row_ratio(row_data: dict[str, Any], fragments: tuple[str, ...]) -> float | None:
+    """Find a ratio-like value from a Damodaran row by loose column fragments."""
+    normalized_fragments = [fragment.lower() for fragment in fragments]
+    for key, value in row_data.items():
+        key_text = str(key).lower()
+        if all(fragment in key_text for fragment in normalized_fragments):
+            ratio = _ratio_like_to_decimal(value)
+            if ratio is not None and -0.5 <= ratio <= 0.8:
+                return ratio
+    return None
+
+
+def _ratio_like_to_decimal(value: Any) -> float | None:
+    """Convert ratio values that may appear as 8.7, 8.7%, or 0.087 into decimals."""
+    number = _value_or_none(value)
+    if number is None:
+        return None
+    if abs(number) > 3:
+        return number / 100
+    return number
 
 
 def _value_or_none(value: Any) -> float | None:
@@ -456,7 +1523,7 @@ def _latest_available_value(frame: pd.DataFrame, column: str) -> float | None:
     return float(values.iloc[-1])
 
 
-def _historical_depreciation_pct_revenue(income_metrics: pd.DataFrame, fallback: float = 0.03) -> float:
+def _historical_depreciation_pct_revenue(income_metrics: pd.DataFrame, fallback: float = 0.03, years: int = 3) -> float:
     """
     Estimate D&A as a percentage of revenue using EBITDA minus EBIT.
 
@@ -469,7 +1536,7 @@ def _historical_depreciation_pct_revenue(income_metrics: pd.DataFrame, fallback:
     required = {"revenue", "ebitda", "ebit"}
     if income_metrics.empty or not required.issubset(income_metrics.columns):
         return fallback
-    frame = income_metrics.tail(3).copy()
+    frame = income_metrics.tail(years).copy()
     revenue = pd.to_numeric(frame["revenue"], errors="coerce")
     ebitda = pd.to_numeric(frame["ebitda"], errors="coerce")
     ebit = pd.to_numeric(frame["ebit"], errors="coerce")
@@ -480,7 +1547,12 @@ def _historical_depreciation_pct_revenue(income_metrics: pd.DataFrame, fallback:
     return float(ratios.mean())
 
 
-def _historical_capex_pct_revenue(income_metrics: pd.DataFrame, cash_flow_metrics: pd.DataFrame, fallback: float = 0.04) -> float:
+def _historical_capex_pct_revenue(
+    income_metrics: pd.DataFrame,
+    cash_flow_metrics: pd.DataFrame,
+    fallback: float = 0.04,
+    years: int = 3,
+) -> float:
     """
     Estimate CapEx as a percentage of revenue from the latest three fiscal years.
 
@@ -499,7 +1571,7 @@ def _historical_capex_pct_revenue(income_metrics: pd.DataFrame, cash_flow_metric
     merged = (
         income_metrics[["year", "revenue"]]
         .merge(cash_flow_metrics[["year", "capital_expenditure"]], on="year", how="inner")
-        .tail(3)
+        .tail(years)
     )
     revenue = pd.to_numeric(merged["revenue"], errors="coerce")
     capex = pd.to_numeric(merged["capital_expenditure"], errors="coerce").abs()
@@ -533,29 +1605,49 @@ def _historical_revenue_growth_assumption(income_metrics: pd.DataFrame) -> tuple
     """
     Choose a robust revenue-growth default for the DCF assumption.
 
-    Formula: prefer five-year CAGR; fall back to three-year CAGR when five-year data is unavailable.
+    Formula: prefer the longest available 2-5 year CAGR window.
     Source: yfinance income statement revenue history.
     Example: Apple uses FY2021-FY2025 when available instead of being dominated by one weak FY2023.
     Required inputs: income metrics with annual revenue.
     Limitation: CAGR still simplifies cyclical revenue patterns into one annualized number.
     """
     if income_metrics.empty or "revenue" not in income_metrics.columns:
-        return None, "Fallback assumption (historical revenue data unavailable)"
+        return None, "Insufficient historical data - using sector benchmark fallback"
 
     frame = income_metrics.copy()
     frame["revenue"] = pd.to_numeric(frame["revenue"], errors="coerce")
     frame = frame.dropna(subset=["revenue"])
     frame = frame[frame["revenue"] > 0]
-    if len(frame) >= 5:
-        window = frame.tail(5)
-        return _cagr_from_window(window), f"5-year historical CAGR ({_period_range(window)})"
-    if len(frame) >= 3:
-        window = frame.tail(3)
-        return _cagr_from_window(window), f"3-year historical CAGR ({_period_range(window)}) - 5-year data not available"
-    if len(frame) >= 2:
-        window = frame.tail(2)
-        return _cagr_from_window(window), f"2-year historical CAGR ({_period_range(window)}) - limited history available"
-    return None, "Fallback assumption (historical revenue data unavailable)"
+    # yfinance can return five FY columns while older line items are unavailable
+    # (for example AAPL FY2021 TotalRevenue is NaN); label the usable window.
+    available_years = min(len(frame), 5)
+    if available_years >= 2:
+        window = frame.tail(available_years)
+        return _cagr_from_window(window), _cagr_source_from_window(window)
+    return None, "Insufficient historical data - using sector benchmark fallback"
+
+
+def _historical_revenue_cagr_source(income_metrics: pd.DataFrame, years: int = 5) -> str:
+    """Return a CAGR source label using growth periods, not data-point count."""
+    if income_metrics.empty or "revenue" not in income_metrics.columns:
+        return "Insufficient historical data - using sector benchmark fallback"
+    frame = income_metrics.copy()
+    frame["revenue"] = pd.to_numeric(frame["revenue"], errors="coerce")
+    frame = frame.dropna(subset=["revenue"])
+    frame = frame[frame["revenue"] > 0]
+    window = frame.tail(years)
+    if len(window) < 2:
+        return "Insufficient historical data - using sector benchmark fallback"
+    return _cagr_source_from_window(window)
+
+
+def _cagr_source_from_window(frame: pd.DataFrame) -> str:
+    """Describe CAGR by elapsed growth periods rather than observation count."""
+    periods = len(frame) - 1
+    period_range = _period_range(frame)
+    if periods <= 1:
+        return f"1-year growth rate ({period_range})"
+    return f"{periods}-year CAGR ({period_range}, {periods} growth periods)"
 
 
 def _cagr_from_window(frame: pd.DataFrame) -> float | None:
@@ -594,6 +1686,17 @@ def _historical_working_capital_pct_revenue(
     Required inputs: current assets, current liabilities, revenue.
     Limitation: falls back to 2% when balance-sheet detail is unavailable.
     """
+    value, _source = _historical_working_capital_assumption(income_metrics, balance_metrics, fallback)
+    return value
+
+
+def _historical_working_capital_assumption(
+    income_metrics: pd.DataFrame,
+    balance_metrics: pd.DataFrame,
+    fallback: float = 0.02,
+) -> tuple[float, str]:
+    """Return working capital as a revenue percentage plus the source label for reports."""
+    fallback_source = "Default 2% (current assets data not available)"
     required_income = {"year", "revenue"}
     required_balance = {"year", "current_assets", "current_liabilities"}
     if (
@@ -602,7 +1705,7 @@ def _historical_working_capital_pct_revenue(
         or not required_income.issubset(income_metrics.columns)
         or not required_balance.issubset(balance_metrics.columns)
     ):
-        return fallback
+        return fallback, fallback_source
     merged = (
         income_metrics[["year", "revenue"]]
         .merge(balance_metrics[["year", "current_assets", "current_liabilities"]], on="year", how="inner")
@@ -614,5 +1717,5 @@ def _historical_working_capital_pct_revenue(
     ratios = ((current_assets - current_liabilities) / revenue).replace([float("inf"), -float("inf")], pd.NA).dropna()
     ratios = ratios[(ratios >= -0.5) & (ratios <= 0.8)]
     if ratios.empty:
-        return fallback
-    return float(ratios.mean())
+        return fallback, fallback_source
+    return float(ratios.mean()), "3-year historical average"
