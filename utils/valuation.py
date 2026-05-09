@@ -360,7 +360,7 @@ def build_valuation_result(
         else "Default terminal growth assumption"
     )
     depreciation_pct_revenue = _historical_depreciation_pct_revenue(income_metrics)
-    capex_pct_revenue = _historical_capex_pct_revenue(income_metrics, cash_flow_metrics)
+    capex_pct_revenue, capex_source = _historical_capex_assumption(income_metrics, cash_flow_metrics)
     dcf_tiers = []
     dcf = {}
     selected_tier = None
@@ -386,6 +386,7 @@ def build_valuation_result(
             standard_revenue_growth_source=revenue_growth_source,
             standard_depreciation_pct_revenue=depreciation_pct_revenue,
             standard_capex_pct_revenue=capex_pct_revenue,
+            standard_capex_source=capex_source,
             beta_match=beta_match,
         )
         dcf = selected_tier.get("dcf", {}) if selected_tier else {}
@@ -410,6 +411,7 @@ def build_valuation_result(
                 current_price=current_price,
                 terminal_growth=terminal_growth,
                 tax_rate=tax_rate,
+                historical_ebit_margin_average=_reverse_dcf_historical_margin_average(income_metrics),
             )
     selected_assumptions = (selected_tier or {}).get("assumptions", {})
 
@@ -429,6 +431,7 @@ def build_valuation_result(
         "interest_expense_used": interest_expense,
         "depreciation_pct_revenue": selected_assumptions.get("depreciation_pct_revenue", depreciation_pct_revenue),
         "capex_pct_revenue": selected_assumptions.get("capex_pct_revenue", capex_pct_revenue),
+        "capex_source": selected_assumptions.get("capex_source", capex_source),
         "revenue_growth": selected_assumptions.get("revenue_growth", revenue_growth),
         "revenue_growth_source": selected_assumptions.get("revenue_growth_source", revenue_growth_source),
         "terminal_growth_cagr": terminal_cagr,
@@ -441,6 +444,7 @@ def build_valuation_result(
         "unlevered_beta": unlevered_beta,
         "levered_beta": levered_beta,
         "yfinance_beta": info.get("beta"),
+        "damodaran_sector": getattr(beta_match, "matched_industry", None),
         "cost_of_equity": cost_of_equity,
         "equity_weight": weights["equity_weight"],
         "debt_weight": weights["debt_weight"],
@@ -481,6 +485,7 @@ def _build_dcf_tier_results(
     standard_depreciation_pct_revenue: float,
     standard_capex_pct_revenue: float,
     beta_match: Any,
+    standard_capex_source: str = "3-year historical average",
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Run the three DCF tiers and choose the first result that passes sanity gates."""
     smoothed_margin, smoothed_margin_source = _historical_margin_assumption(income_metrics, "ebit_margin")
@@ -516,7 +521,7 @@ def _build_dcf_tier_results(
                 "depreciation_pct_revenue": standard_depreciation_pct_revenue,
                 "depreciation_source": "recent historical average",
                 "capex_pct_revenue": standard_capex_pct_revenue,
-                "capex_source": "3-year historical average",
+                "capex_source": standard_capex_source,
                 "working_capital_pct_revenue": working_capital_pct_revenue,
                 "working_capital_source": working_capital_source,
             },
@@ -742,6 +747,7 @@ def build_reverse_dcf_analysis(
     current_price: float | None,
     terminal_growth: float,
     tax_rate: float,
+    historical_ebit_margin_average: float | None = None,
 ) -> dict[str, Any]:
     """Build Reverse DCF diagnostics from Tier 1 assumptions; this is not a valuation tier."""
     assumptions = tier1.get("assumptions") or {}
@@ -763,7 +769,13 @@ def build_reverse_dcf_analysis(
     )
     implied_growth = solved.get("implied_growth")
     gap = implied_growth - tier1_growth if implied_growth is not None and tier1_growth is not None else None
-    interpretation = _reverse_dcf_interpretation(implied_growth, tier1_growth, solved.get("message"))
+    failure_message = _reverse_dcf_failure_message(
+        solved,
+        assumptions.get("ebit_margin"),
+        historical_ebit_margin_average,
+    )
+    message = failure_message or solved.get("message")
+    interpretation = _reverse_dcf_interpretation(implied_growth, tier1_growth, message)
     return {
         "implied_growth": implied_growth,
         "tier1_growth": tier1_growth,
@@ -772,7 +784,7 @@ def build_reverse_dcf_analysis(
         "analyst_consensus_source": analyst_source,
         "growth_gap": gap,
         "status": solved.get("status"),
-        "message": solved.get("message"),
+        "message": message,
         "interpretation": interpretation,
         "source": "Reverse DCF (solved from market price)",
         "target_price": current_price,
@@ -866,9 +878,15 @@ def solve_reverse_dcf_growth(
             implied_growth = high_growth
         elif low_gap * high_gap > 0:
             if low_price > current_price and high_price > current_price:
-                message = "Market price implies negative growth beyond -10%."
+                message = (
+                    "Reverse DCF could not solve within the search range (-10% to +50% revenue growth); "
+                    "market price is below the modeled range."
+                )
             else:
-                message = "Market price implies growth beyond 50% - likely irrational pricing."
+                message = (
+                    "Reverse DCF could not solve within the search range (-10% to +50% revenue growth); "
+                    "market price is above the modeled range."
+                )
             return {
                 "implied_growth": None,
                 "status": "UNREACHABLE",
@@ -900,6 +918,48 @@ def solve_reverse_dcf_growth(
         "low_price": low_price,
         "high_price": high_price,
     }
+
+
+def _reverse_dcf_failure_message(
+    solved: dict[str, Any],
+    tier1_ebit_margin: float | None,
+    historical_ebit_margin_average: float | None,
+) -> str | None:
+    """Return context-aware Reverse DCF failure messaging without changing the solver."""
+    status = solved.get("status")
+    if status == "OK":
+        return None
+    if status == "UNREACHABLE":
+        margin = _value_or_none(tier1_ebit_margin)
+        average = _value_or_none(historical_ebit_margin_average)
+        if margin is not None and average is not None and average > 0 and margin < 0.5 * average:
+            return (
+                f"Reverse DCF could not solve. Current Tier 1 EBIT margin ({margin:.1%}) is significantly below "
+                f"the 5-year average ({average:.1%}), suggesting the market is pricing margin recovery rather "
+                "than revenue growth. Standard reverse DCF holds margins constant and cannot capture this scenario."
+            )
+        return (
+            "Reverse DCF could not solve within the search range (-10% to +50% revenue growth). This may indicate "
+            "the market is pricing factors not captured by the model (acquisition premium, breakup value, takeover "
+            "speculation, etc)."
+        )
+    if status in {"UNAVAILABLE", "FAILED"}:
+        return (
+            "Reverse DCF could not solve due to model input issues. Verify that Tier 1 inputs are valid "
+            "(positive WACC, positive shares outstanding, etc)."
+        )
+    return None
+
+
+def _reverse_dcf_historical_margin_average(income_metrics: pd.DataFrame) -> float | None:
+    """Return the available trailing 5-year EBIT margin average for Reverse DCF diagnostics."""
+    if income_metrics.empty or "ebit_margin" not in income_metrics.columns:
+        return None
+    values = pd.to_numeric(income_metrics["ebit_margin"], errors="coerce").dropna().tail(5)
+    values = values[(values >= -50.0) & (values <= 80.0)]
+    if values.empty:
+        return None
+    return float((values / 100).mean())
 
 
 def _solve_brentq(function, low: float, high: float) -> float:
@@ -1562,12 +1622,24 @@ def _historical_capex_pct_revenue(
     Required inputs: income_metrics revenue and cash_flow_metrics capital_expenditure.
     Limitation: falls back to 4% when cash flow line items are missing.
     """
+    value, _source = _historical_capex_assumption(income_metrics, cash_flow_metrics, fallback, years)
+    return value
+
+
+def _historical_capex_assumption(
+    income_metrics: pd.DataFrame,
+    cash_flow_metrics: pd.DataFrame,
+    fallback: float = 0.04,
+    years: int = 3,
+) -> tuple[float, str]:
+    """Return CapEx as a revenue percentage plus the source label for reports."""
+    fallback_source = "Default 4% (capital expenditure data not available)"
     if income_metrics.empty or cash_flow_metrics.empty:
-        return fallback
+        return fallback, fallback_source
     required_income = {"year", "revenue"}
     required_cash = {"year", "capital_expenditure"}
     if not required_income.issubset(income_metrics.columns) or not required_cash.issubset(cash_flow_metrics.columns):
-        return fallback
+        return fallback, fallback_source
     merged = (
         income_metrics[["year", "revenue"]]
         .merge(cash_flow_metrics[["year", "capital_expenditure"]], on="year", how="inner")
@@ -1578,8 +1650,8 @@ def _historical_capex_pct_revenue(
     ratios = (capex / revenue).replace([float("inf"), -float("inf")], pd.NA).dropna()
     ratios = ratios[(ratios >= 0) & (ratios <= 0.3)]
     if ratios.empty:
-        return fallback
-    return float(ratios.mean())
+        return fallback, fallback_source
+    return float(ratios.mean()), f"{min(years, len(ratios))}-year historical average"
 
 
 def _historical_revenue_cagr(income_metrics: pd.DataFrame, years: int = 3, fallback: float | None = None) -> float | None:

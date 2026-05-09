@@ -4,6 +4,7 @@ import pandas as pd
 
 from utils.calculations import build_dividend_metrics
 from utils.damodaran import _ratio_to_decimal, match_industry, normalize_damodaran_beta_table
+from app import filter_incomplete_display_rows
 
 
 def _raw_beta_table() -> pd.DataFrame:
@@ -54,3 +55,19 @@ def test_dividend_metrics_explain_missing_payout_ratio_and_mark_ytd(monkeypatch)
     assert result.loc[result["year"].eq(2025), "period"].iloc[0] == "FY2025"
     assert result.loc[result["year"].eq(2026), "period"].iloc[0] == "FY2026 YTD"
     assert "year-to-date" in result.loc[result["year"].eq(2026), "payout_ratio_note"].iloc[0]
+
+
+def test_filter_incomplete_display_rows_hides_only_empty_numeric_rows():
+    frame = pd.DataFrame(
+        {
+            "year": [2021, 2022],
+            "period": ["FY2021", "FY2022"],
+            "revenue": [None, 100.0],
+            "ebit": [None, 20.0],
+        }
+    )
+
+    display, excluded = filter_incomplete_display_rows(frame)
+
+    assert display["year"].tolist() == [2022]
+    assert excluded == ["FY2021"]

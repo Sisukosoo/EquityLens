@@ -6,8 +6,8 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 
-APP_TITLE = "Financial Analyzer"
-APP_TAGLINE = "Built by [Nimesi] | Laskentatoimi & Yritysrahoitus"
+APP_TITLE = "EquityLens"
+APP_TAGLINE = "Built by Sisu Kosonen | Laskentatoimi & Yritysrahoitus"
 DISCLAIMER = "Tämä on opiskelutarkoituksiin tehty työkalu, ei sijoitusneuvonta."
 DATA_SOURCES = "Data sources: Yahoo Finance via yfinance. Market and analyst data availability varies by ticker."
 TIMEZONE = "Europe/Helsinki"

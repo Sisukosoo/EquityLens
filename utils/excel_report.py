@@ -20,6 +20,7 @@ from openpyxl.utils import get_column_letter
 
 from config import DATA_SOURCES, DISCLAIMER, current_timestamp
 from utils.logger import log_event
+from utils.sanity_checks import build_excel_sanity_checks, runtime_sanity_checks_for_excel
 
 
 DARK_BLUE = "16213E"
@@ -79,12 +80,12 @@ def build_valuation_excel_report(
         "Raw Data": workbook.create_sheet("Raw Data"),
     }
 
-    _build_summary(sheets["Summary"], data, beta_match, valuation)
+    _build_summary(sheets["Summary"], data, beta_match, valuation, sanity_warnings)
     _build_beta_sheet(sheets["Beta (Damodaran)"], data, beta_match, valuation)
     _build_capm_sheet(sheets["CAPM"], valuation)
     _build_wacc_sheet(sheets["WACC"], valuation)
     _build_dcf_sheet(sheets["DCF"], income_metrics, cash_flow_metrics, valuation)
-    _build_validation_sheet(sheets["Validation"], validation_result, sanity_warnings, valuation)
+    _build_validation_sheet(sheets["Validation"], validation_result, sanity_warnings, valuation, income_metrics, data)
     _build_raw_data_sheet(sheets["Raw Data"], data, income_metrics, balance_metrics, cash_flow_metrics, beta_match)
 
     for sheet in sheets.values():
@@ -155,6 +156,11 @@ def _recalculate_workbook_formulas(workbook_bytes: bytes) -> bytes:
 
 
 def _title(sheet, title: str) -> None:
+    """Apply a worksheet title band on the first row."""
+    _title_at(sheet, title, 1)
+
+
+def _title_at(sheet, title: str, row: int) -> None:
     """
     Apply a worksheet title band.
 
@@ -164,8 +170,8 @@ def _title(sheet, title: str) -> None:
     Required inputs: worksheet and title.
     Limitation: assumes title spans columns A:F.
     """
-    sheet.merge_cells("A1:F1")
-    cell = sheet["A1"]
+    sheet.merge_cells(start_row=row, start_column=1, end_row=row, end_column=6)
+    cell = sheet.cell(row, 1)
     cell.value = title
     cell.font = Font(bold=True, size=14, color=WHITE)
     cell.fill = PatternFill("solid", fgColor=DARK_BLUE)
@@ -304,9 +310,13 @@ def _decimal_to_percentage_points(value: float | int | None) -> float | None:
     return float(value) * 100
 
 
-def _tier_status_text(tier: dict[str, Any]) -> str:
+def _tier_status_text(tier: dict[str, Any], critical_sanity_warning: bool = False) -> str:
     """Return report status text with a non-empty reason for accepted tiers."""
+    if tier.get("tier") == 5 and tier.get("status") == "REFERENCE":
+        return "REFERENCE - tangible book value shown as conservative floor"
     if tier.get("selected"):
+        if critical_sanity_warning:
+            return "Computed but flagged - critical sanity check applies. See Validation tab."
         reason = tier.get("acceptance_reason") or tier.get("selection_reason") or "within tier sanity limits"
         return f"Used as primary result - {reason}"
     status = tier.get("status") or "UNKNOWN"
@@ -317,7 +327,13 @@ def _tier_status_text(tier: dict[str, Any]) -> str:
     return f"{status} - {reason}"
 
 
-def _build_summary(sheet, data: dict, beta_match: Any, valuation: dict[str, Any]) -> None:
+def _build_summary(
+    sheet,
+    data: dict,
+    beta_match: Any,
+    valuation: dict[str, Any],
+    sanity_warnings: list[dict[str, str]] | None = None,
+) -> None:
     """
     Build the Summary worksheet.
 
@@ -327,7 +343,12 @@ def _build_summary(sheet, data: dict, beta_match: Any, valuation: dict[str, Any]
     Required inputs: company data, beta match, valuation dict.
     Limitation: summary values are snapshots at generation time.
     """
-    _title(sheet, "Valuation Summary")
+    has_critical_sanity_warning = _has_critical_sanity_warning(sanity_warnings)
+    if has_critical_sanity_warning:
+        _critical_summary_warning(sheet)
+        _title_at(sheet, "Valuation Summary", 2)
+    else:
+        _title(sheet, "Valuation Summary")
     info = data.get("info", {})
     currency = valuation.get("currency", "")
     selected = valuation.get("selected_dcf_tier") or {}
@@ -347,16 +368,18 @@ def _build_summary(sheet, data: dict, beta_match: Any, valuation: dict[str, Any]
         ("Selected valuation tier", selected.get("method")),
         ("Current Market Price", valuation.get("current_price")),
         ("Upside / Downside", selected_dcf.get("upside")),
-        ("Confidence", _confidence_label(selected)),
-        ("Reason", selected.get("explanation") or valuation.get("dcf_selection_reason")),
+        ("Confidence", _summary_confidence_label(selected, has_critical_sanity_warning)),
+        ("Reason", _summary_reason(selected, valuation, has_critical_sanity_warning)),
     ]
+    header_row = 3 if has_critical_sanity_warning else 2
+    first_data_row = header_row + 1
     sheet.append(["Field", "Value"])
-    _header(sheet["A2:B2"])
+    _header(sheet[f"A{header_row}:B{header_row}"])
     for row in rows:
         sheet.append(list(row))
     percent_rows = {"Cost of Equity", "Cost of Debt", "WACC", "Upside / Downside"}
     price_rows = {"Selected estimate", "Current Market Price"}
-    for row_idx in range(3, 3 + len(rows)):
+    for row_idx in range(first_data_row, first_data_row + len(rows)):
         label = sheet[f"A{row_idx}"].value
         if label in percent_rows:
             _pct(sheet[f"B{row_idx}"])
@@ -367,7 +390,7 @@ def _build_summary(sheet, data: dict, beta_match: Any, valuation: dict[str, Any]
         if label in {"WACC", "Selected estimate"}:
             _result(sheet[f"B{row_idx}"])
 
-    tier_start = 3 + len(rows) + 2
+    tier_start = first_data_row + len(rows) + 2
     sheet[f"A{tier_start}"] = "Implied Share Price Analysis"
     _subheader(sheet[f"A{tier_start}"])
     tier_header = tier_start + 1
@@ -383,13 +406,17 @@ def _build_summary(sheet, data: dict, beta_match: Any, valuation: dict[str, Any]
         sheet[f"A{row_idx}"] = f"Tier {tier.get('tier')} - {tier.get('name')}"
         sheet[f"B{row_idx}"] = dcf.get("implied_price")
         sheet[f"C{row_idx}"] = dcf.get("upside")
-        sheet[f"D{row_idx}"] = _tier_status_text(tier)
+        sheet[f"D{row_idx}"] = _tier_status_text(tier, has_critical_sanity_warning)
         _price(sheet[f"B{row_idx}"], currency)
         _pct(sheet[f"C{row_idx}"])
         if tier.get("selected"):
             _result(sheet[f"B{row_idx}"])
-            sheet[f"D{row_idx}"].fill = PatternFill("solid", fgColor=STATUS_GREEN)
-            sheet[f"D{row_idx}"].font = Font(bold=True, color=STATUS_GREEN_TEXT)
+            if has_critical_sanity_warning:
+                sheet[f"D{row_idx}"].fill = PatternFill("solid", fgColor=STATUS_RED)
+                sheet[f"D{row_idx}"].font = Font(bold=True, color=STATUS_RED_TEXT)
+            else:
+                sheet[f"D{row_idx}"].fill = PatternFill("solid", fgColor=STATUS_GREEN)
+                sheet[f"D{row_idx}"].font = Font(bold=True, color=STATUS_GREEN_TEXT)
         elif tier.get("status") == "REJECTED":
             sheet[f"D{row_idx}"].fill = PatternFill("solid", fgColor=STATUS_YELLOW)
             sheet[f"D{row_idx}"].font = Font(bold=True, color=STATUS_YELLOW_TEXT)
@@ -407,6 +434,42 @@ def _build_summary(sheet, data: dict, beta_match: Any, valuation: dict[str, Any]
     sheet["D4"] = f"Damodaran industry: {beta_match.matched_industry}"
     sheet["D5"] = f"Match confidence: {beta_match.confidence:.1f}%"
     sheet["D6"] = f"Updated: {beta_match.source_updated}"
+
+
+def _has_critical_sanity_warning(sanity_warnings: list[dict[str, str]] | None) -> bool:
+    """Return True when report generation was allowed despite a critical sanity warning."""
+    return any(str(warning.get("severity", "")).lower() == "critical" for warning in sanity_warnings or [])
+
+
+def _critical_summary_warning(sheet) -> None:
+    """Write the top-of-summary critical warning banner."""
+    sheet.merge_cells("A1:F1")
+    cell = sheet["A1"]
+    cell.value = (
+        "⚠ CRITICAL WARNING: This valuation has critical sanity check warnings. Do not use the implied price "
+        "as a fair value estimate. See Validation tab > Sanity Checks for explanation."
+    )
+    cell.font = Font(bold=True, color=STATUS_RED_TEXT)
+    cell.fill = PatternFill("solid", fgColor=STATUS_RED)
+    cell.alignment = Alignment(wrap_text=True, vertical="center")
+    cell.border = THIN_BORDER
+
+
+def _summary_confidence_label(selected: dict[str, Any], critical_sanity_warning: bool) -> str:
+    """Return Summary confidence text, overriding normal confidence for critical sanity warnings."""
+    if critical_sanity_warning:
+        return (
+            "CRITICAL - DCF model not appropriate for this business type. See Validation tab. "
+            "Result should not be used as a fair value estimate."
+        )
+    return _confidence_label(selected)
+
+
+def _summary_reason(selected: dict[str, Any], valuation: dict[str, Any], critical_sanity_warning: bool) -> str:
+    """Return Summary reason text, overriding normal tier explanation for critical sanity warnings."""
+    if critical_sanity_warning:
+        return "One or more critical sanity checks have fired. See Validation tab > Sanity Checks for details."
+    return selected.get("explanation") or valuation.get("dcf_selection_reason")
 
 
 def _build_beta_sheet(sheet, data: dict, beta_match: Any, valuation: dict[str, Any]) -> None:
@@ -433,6 +496,11 @@ def _build_beta_sheet(sheet, data: dict, beta_match: Any, valuation: dict[str, A
     )
     sheet["A11"], sheet["B11"] = "Levered Beta", "=B8*(1+(1-B10)*B9)"
     sheet["A12"], sheet["B12"] = "yfinance beta (reference only)", valuation.get("yfinance_beta")
+    sheet["C12"] = (
+        "Yahoo Finance beta typically reflects 1-2 year regression against the market, which can be heavily "
+        "influenced by recent market regime. The Damodaran sector-relevered beta is preferred for DCF as it "
+        "represents long-run business risk and is normalized across the sector."
+    )
     for row in (7, 9, 10):
         _pct(sheet[f"B{row}"])
     _formula(sheet["B11"])
@@ -582,16 +650,25 @@ def _build_dcf_sheet(sheet, income: pd.DataFrame, cash: pd.DataFrame, valuation:
     _title(sheet, "DCF")
     sheet["A3"] = "Historical Data"
     _subheader(sheet["A3"])
-    sheet.append(["Period", "Revenue", "EBIT", "FCF"])
-    _header(sheet["A4:D4"])
     hist = income.tail(5).merge(cash[["year", "free_cash_flow"]], on="year", how="left")
-    for _, row in hist.iterrows():
-        sheet.append([row.get("period") or row.get("year"), row.get("revenue"), row.get("ebit"), row.get("free_cash_flow")])
-    for row in range(5, 5 + len(hist)):
+    hist_display, excluded_periods = _filter_empty_numeric_display_rows(hist)
+    header_row = 4
+    if excluded_periods:
+        _write_exclusion_note(sheet, header_row, excluded_periods, 4)
+        header_row += 1
+    for col_idx, header in enumerate(["Period", "Revenue", "EBIT", "FCF"], start=1):
+        sheet.cell(header_row, col_idx).value = header
+    _header(sheet[f"A{header_row}:D{header_row}"])
+    for row_idx, (_, row) in enumerate(hist_display.iterrows(), start=header_row + 1):
+        sheet.cell(row_idx, 1).value = row.get("period") or row.get("year")
+        sheet.cell(row_idx, 2).value = row.get("revenue")
+        sheet.cell(row_idx, 3).value = row.get("ebit")
+        sheet.cell(row_idx, 4).value = row.get("free_cash_flow")
+    for row in range(header_row + 1, header_row + 1 + len(hist_display)):
         for col in range(2, 5):
             _money(sheet.cell(row, col), currency)
 
-    current_row = 7 + len(hist)
+    current_row = header_row + len(hist_display) + 3
     for tier in valuation.get("dcf_tiers", []) or []:
         current_row = _write_dcf_tier_section(sheet, current_row, tier, valuation, currency)
         current_row += 2
@@ -734,7 +811,7 @@ def _write_reverse_dcf_section(sheet, start_row: int, valuation: dict[str, Any])
             "Interpretation",
             reverse.get("interpretation") or reverse.get("message"),
             "text",
-            "Generated from gap analysis logic",
+            "",
         ),
     ]
     for row_idx, (label, value, value_type, source) in enumerate(rows, start=header_row + 1):
@@ -848,6 +925,8 @@ def _build_validation_sheet(
     validation_result: dict[str, Any] | None,
     sanity_warnings: list[dict[str, str]],
     valuation: dict[str, Any],
+    income_metrics: pd.DataFrame,
+    data: dict[str, Any],
 ) -> None:
     """
     Build the Validation worksheet.
@@ -859,9 +938,13 @@ def _build_validation_sheet(
     Limitation: validation depends on live Damodaran benchmark availability.
     """
     _title(sheet, "Validation")
+    runtime_rows = runtime_sanity_checks_for_excel(sanity_warnings)
+    analyst_rows = build_excel_sanity_checks(valuation, income_metrics, validation_result, data)
+    sanity_rows = _merge_excel_sanity_rows(runtime_rows, analyst_rows)
     if not validation_result:
         sheet["A3"] = "Validation was not available."
-        _write_validation_dcf_tier_used(sheet, 5, valuation)
+        next_row = _write_excel_sanity_checks(sheet, 5, sanity_rows)
+        _write_validation_dcf_tier_used(sheet, next_row, valuation)
         return
     sheet["A3"] = f"Source: {validation_result.get('source_url')} - Updated {validation_result.get('source_updated')}"
     sheet.append(["Metric", "Calculated", "Damodaran (industry avg)", "Difference", "Status", "Note"])
@@ -907,15 +990,7 @@ def _build_validation_sheet(
         sheet["A10"] = validation_result["tax_effective_note"]
         sheet["A10"].font = Font(italic=True, color="666666")
         sheet.merge_cells("A10:F10")
-    sheet[f"A{start}"] = "Sanity checks"
-    _subheader(sheet[f"A{start}"])
-    sheet[f"A{start + 1}"], sheet[f"B{start + 1}"] = "Severity", "Message"
-    _header(sheet[f"A{start + 1}:B{start + 1}"])
-    for idx, warning in enumerate(sanity_warnings, start=start + 2):
-        sheet[f"A{idx}"] = warning.get("severity")
-        sheet[f"B{idx}"] = warning.get("message")
-
-    tier_row = start + 4 + len(sanity_warnings)
+    tier_row = _write_excel_sanity_checks(sheet, start, sanity_rows)
     if valuation.get("selected_dcf_tier"):
         _write_validation_dcf_tier_used(sheet, tier_row, valuation)
         tier_row += 4
@@ -926,6 +1001,48 @@ def _build_validation_sheet(
         _subheader(sheet[f"A{expl_row}"])
         for offset, text in enumerate(validation_result["explanations"], start=1):
             sheet[f"A{expl_row + offset}"] = text
+
+
+def _write_excel_sanity_checks(sheet, start: int, rows: list[dict[str, str]]) -> int:
+    """Write categorized Excel-only sanity-check rows and return the next section row."""
+    sheet[f"A{start}"] = "Sanity checks"
+    _subheader(sheet[f"A{start}"])
+    header_row = start + 1
+    sheet[f"A{header_row}"], sheet[f"B{header_row}"], sheet[f"C{header_row}"] = "Severity", "Category", "Message"
+    _header(sheet[f"A{header_row}:C{header_row}"])
+    for idx, row in enumerate(rows, start=header_row + 1):
+        sheet[f"A{idx}"] = row.get("severity")
+        sheet[f"B{idx}"] = row.get("category")
+        sheet[f"C{idx}"] = row.get("message")
+        _style_severity_cell(sheet[f"A{idx}"], row.get("severity"))
+        sheet[f"C{idx}"].alignment = Alignment(wrap_text=True, vertical="top")
+    return header_row + len(rows) + 3
+
+
+def _merge_excel_sanity_rows(runtime_rows: list[dict[str, str]], analyst_rows: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Combine runtime gate warnings with analyst-level Excel checks."""
+    rows = list(runtime_rows)
+    if analyst_rows == [{"severity": "info", "category": "Overall", "message": "All sanity checks passed."}] and rows:
+        return rows
+    rows.extend(analyst_rows)
+    if not rows:
+        return [{"severity": "info", "category": "Overall", "message": "All sanity checks passed."}]
+    return sorted(rows, key=lambda row: {"critical": 0, "warning_high": 1, "warning": 1, "info": 2}.get(row.get("severity"), 3))
+
+
+def _style_severity_cell(cell, severity: str | None) -> None:
+    """Apply existing severity color coding to a validation severity cell."""
+    severity_text = str(severity or "").lower()
+    cell.border = THIN_BORDER
+    cell.font = Font(bold=True)
+    if severity_text == "critical":
+        cell.fill = PatternFill("solid", fgColor=STATUS_RED)
+        cell.font = Font(bold=True, color=STATUS_RED_TEXT)
+    elif severity_text == "warning":
+        cell.fill = PatternFill("solid", fgColor=STATUS_YELLOW)
+        cell.font = Font(bold=True, color=STATUS_YELLOW_TEXT)
+    else:
+        cell.fill = PatternFill("solid", fgColor=LIGHT_BLUE)
 
 
 def _write_validation_dcf_tier_used(sheet, start_row: int, valuation: dict[str, Any]) -> None:
@@ -996,18 +1113,68 @@ def _write_frame(sheet, title: str, frame: pd.DataFrame, start_row: int) -> None
     if frame.empty:
         sheet[f"A{start_row + 1}"] = "No data"
         return
-    display = frame.copy()
-    data_columns = [column for column in display.columns if column not in {"year", "period"}]
-    display["Note"] = ""
-    if data_columns:
-        empty_mask = display[data_columns].isna().all(axis=1)
-        display.loc[empty_mask, "Note"] = "Data not available from source"
+    display, excluded_periods = _filter_empty_numeric_display_rows(frame)
+    header_row = start_row + 1
+    if excluded_periods:
+        _write_exclusion_note(sheet, header_row, excluded_periods, max(len(display.columns), 1))
+        header_row += 1
     for col_idx, col in enumerate(display.columns, start=1):
-        sheet.cell(start_row + 1, col_idx).value = col
-    _header(sheet[f"A{start_row + 1}:{get_column_letter(len(display.columns))}{start_row + 1}"])
-    for row_idx, (_, row) in enumerate(display.iterrows(), start=start_row + 2):
+        sheet.cell(header_row, col_idx).value = col
+    _header(sheet[f"A{header_row}:{get_column_letter(len(display.columns))}{header_row}"])
+    for row_idx, (_, row) in enumerate(display.iterrows(), start=header_row + 1):
         for col_idx, value in enumerate(row.tolist(), start=1):
             sheet.cell(row_idx, col_idx).value = value
+
+
+def _filter_empty_numeric_display_rows(frame: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
+    """Return a display-only DataFrame without rows whose numeric fields are all missing."""
+    if frame.empty:
+        return frame.copy(), []
+    metadata_columns = {"year", "period", "period_end", "period_type"}
+    data_columns = [column for column in frame.columns if column not in metadata_columns]
+    if not data_columns:
+        return frame.copy(), []
+    numeric_values = frame[data_columns].apply(pd.to_numeric, errors="coerce")
+    empty_mask = numeric_values.isna().all(axis=1)
+    excluded = [_display_period_label(row) for _, row in frame.loc[empty_mask].iterrows()]
+    return frame.loc[~empty_mask].copy(), excluded
+
+
+def _write_exclusion_note(sheet, row_idx: int, excluded_periods: list[str], end_col: int) -> None:
+    """Write an italicized note for historical rows hidden from the display layer."""
+    note = _format_exclusion_note(excluded_periods)
+    sheet.cell(row_idx, 1).value = note
+    sheet.cell(row_idx, 1).font = Font(italic=True, color="666666")
+    sheet.cell(row_idx, 1).alignment = Alignment(wrap_text=True, vertical="top")
+    if end_col > 1:
+        sheet.merge_cells(start_row=row_idx, start_column=1, end_row=row_idx, end_column=end_col)
+
+
+def _format_exclusion_note(excluded_periods: list[str]) -> str:
+    """Format the Yahoo Finance incomplete-data exclusion note."""
+    if not excluded_periods:
+        return ""
+    ordered = sorted(excluded_periods, key=_period_sort_key)
+    if len(ordered) == 1 or ordered[0] == ordered[-1]:
+        period_text = ordered[0]
+    else:
+        period_text = f"{ordered[0]}-{ordered[-1]}"
+    return f"Note: {period_text} excluded due to incomplete data from Yahoo Finance."
+
+
+def _period_sort_key(label: str) -> int:
+    """Sort FY labels by their year when possible."""
+    digits = "".join(ch for ch in str(label) if ch.isdigit())
+    return int(digits[:4]) if len(digits) >= 4 else 0
+
+
+def _display_period_label(row: pd.Series) -> str:
+    """Return a compact FY label for hidden historical rows."""
+    if pd.notna(row.get("period")):
+        return str(row.get("period")).split()[0]
+    if pd.notna(row.get("year")):
+        return f"FY{int(row.get('year'))}"
+    return "earlier FY"
 
 
 def _safe_latest(frame: pd.DataFrame, column: str) -> float | None:

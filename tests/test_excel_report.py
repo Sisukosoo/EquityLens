@@ -14,6 +14,20 @@ def _sheet_values(sheet) -> set:
     return {cell.value for row in sheet.iter_rows() for cell in row if cell.value is not None}
 
 
+def _summary_value(sheet, label: str):
+    for row in range(1, sheet.max_row + 1):
+        if sheet[f"A{row}"].value == label:
+            return sheet[f"B{row}"].value
+    raise AssertionError(f"Summary label not found: {label}")
+
+
+def _summary_tier_status(sheet, method: str):
+    for row in range(1, sheet.max_row + 1):
+        if sheet[f"A{row}"].value == method:
+            return sheet[f"D{row}"].value
+    raise AssertionError(f"Summary tier row not found: {method}")
+
+
 def _tier(tier: int, selected: bool = False) -> dict:
     dcf = {
         "forecast": [
@@ -73,6 +87,16 @@ def _build_sample_workbook_bytes():
         }
     )
     cash = pd.DataFrame({"year": [2023, 2024], "free_cash_flow": [6.0, 7.0]})
+
+    return _build_sample_workbook_bytes_with_statements(income, balance, cash)
+
+
+def _build_sample_workbook_bytes_with_statements(
+    income: pd.DataFrame,
+    balance: pd.DataFrame,
+    cash: pd.DataFrame,
+    sanity_warnings: list[dict] | None = None,
+):
     tiers = [_tier(1), _tier(2), _tier(3)]
     tier4 = {
         "tier": 4,
@@ -157,7 +181,7 @@ def _build_sample_workbook_bytes():
         confidence=95.0,
     )
 
-    return build_valuation_excel_report(data, income, balance, cash, beta_match, valuation, None, [])
+    return build_valuation_excel_report(data, income, balance, cash, beta_match, valuation, None, sanity_warnings or [])
 
 
 def _build_sample_workbook():
@@ -213,9 +237,56 @@ def test_excel_report_reverse_dcf_sources_are_row_specific():
         "Same as Tier 1 DCF assumption: 1-year growth rate (FY2023-FY2024)",
         "yfinance earningsGrowth",
         "Calculated: implied minus Tier 1 assumed (in percentage points)",
-        "Generated from gap analysis logic",
+        None,
     ]
     assert len(set(sources)) == 5
+
+
+def test_excel_report_filters_empty_historical_display_rows_and_notes_exclusion():
+    income = pd.DataFrame(
+        {
+            "year": [2021, 2022],
+            "period": ["FY2021", "FY2022"],
+            "revenue": [None, 100.0],
+            "ebit": [None, 10.0],
+            "ebit_margin": [None, 10.0],
+        }
+    )
+    balance = pd.DataFrame(
+        {
+            "year": [2021, 2022],
+            "period": ["FY2021", "FY2022"],
+            "cash": [None, 20.0],
+            "current_assets": [None, 30.0],
+        }
+    )
+    cash = pd.DataFrame(
+        {
+            "year": [2021, 2022],
+            "period": ["FY2021", "FY2022"],
+            "free_cash_flow": [None, 7.0],
+        }
+    )
+    workbook = load_workbook(
+        BytesIO(_build_sample_workbook_bytes_with_statements(income, balance, cash)),
+        data_only=False,
+    )
+
+    dcf_values = _sheet_values(workbook["DCF"])
+    raw_values = _sheet_values(workbook["Raw Data"])
+    dcf_period_values = [workbook["DCF"][f"A{row}"].value for row in range(1, workbook["DCF"].max_row + 1)]
+
+    assert "Note: FY2021 excluded due to incomplete data from Yahoo Finance." in dcf_values
+    assert "Note: FY2021 excluded due to incomplete data from Yahoo Finance." in raw_values
+    assert "FY2021" not in dcf_period_values
+
+
+def test_excel_report_adds_yfinance_beta_context_note():
+    workbook = _build_sample_workbook()
+
+    assert workbook["Beta (Damodaran)"]["C12"].value.startswith(
+        "Yahoo Finance beta typically reflects 1-2 year regression against the market"
+    )
 
 
 def test_excel_report_recalc_populates_cached_formula_values_when_libreoffice_available():
@@ -234,3 +305,86 @@ def test_excel_report_accepted_tier_status_includes_reason():
 
     assert status == "ACCEPTED - within 70% of market price"
     assert status.strip() != "ACCEPTED -"
+
+
+def test_excel_report_tier5_reference_status_has_clear_reason():
+    status = _tier_status_text({"tier": 5, "status": "REFERENCE", "rejection_reason": ""})
+
+    assert status == "REFERENCE - tangible book value shown as conservative floor"
+    assert "no reason provided" not in status
+
+
+def test_excel_report_includes_runtime_business_model_sanity_warning():
+    income = pd.DataFrame({"year": [2024], "period": ["FY2024"], "revenue": [100.0], "ebit_margin": [10.0]})
+    balance = pd.DataFrame({"year": [2024], "period": ["FY2024"], "cash": [20.0]})
+    cash = pd.DataFrame({"year": [2024], "period": ["FY2024"], "free_cash_flow": [7.0]})
+    message = "DCF model is not appropriate for Bank (Money Center) businesses."
+    workbook = load_workbook(
+        BytesIO(
+            _build_sample_workbook_bytes_with_statements(
+                income,
+                balance,
+                cash,
+                [
+                    {
+                        "severity": "critical",
+                        "category": "Business Model Compatibility",
+                        "message": message,
+                    }
+                ],
+            )
+        ),
+        data_only=False,
+    )
+    sheet = workbook["Validation"]
+    sanity_row = next(row for row in range(1, sheet.max_row + 1) if sheet[f"A{row}"].value == "Sanity checks")
+
+    assert sheet[f"A{sanity_row + 2}"].value == "critical"
+    assert sheet[f"B{sanity_row + 2}"].value == "Business Model Compatibility"
+    assert sheet[f"C{sanity_row + 2}"].value == message
+
+
+def test_summary_tab_reflects_critical_sanity_warning():
+    workbook = load_workbook(
+        BytesIO(
+            _build_sample_workbook_bytes_with_statements(
+                pd.DataFrame({"year": [2024], "period": ["FY2024"], "revenue": [100.0], "ebit_margin": [10.0]}),
+                pd.DataFrame({"year": [2024], "period": ["FY2024"], "cash": [20.0]}),
+                pd.DataFrame({"year": [2024], "period": ["FY2024"], "free_cash_flow": [7.0]}),
+                [
+                    {
+                        "severity": "critical",
+                        "category": "Business Model Compatibility",
+                        "message": "DCF model is not appropriate for Bank (Money Center) businesses.",
+                    }
+                ],
+            )
+        ),
+        data_only=False,
+    )
+    sheet = workbook["Summary"]
+
+    assert sheet["A1"].value.startswith("⚠ CRITICAL WARNING")
+    assert sheet["A2"].value == "Valuation Summary"
+    assert _summary_value(sheet, "Confidence") == (
+        "CRITICAL - DCF model not appropriate for this business type. See Validation tab. "
+        "Result should not be used as a fair value estimate."
+    )
+    assert _summary_value(sheet, "Reason") == (
+        "One or more critical sanity checks have fired. See Validation tab > Sanity Checks for details."
+    )
+    assert _summary_tier_status(sheet, "Tier 4 - Multiples-Based Valuation") == (
+        "Computed but flagged - critical sanity check applies. See Validation tab."
+    )
+
+
+def test_summary_tab_stays_normal_without_critical_sanity_warning():
+    workbook = _build_sample_workbook()
+    sheet = workbook["Summary"]
+
+    assert sheet["A1"].value == "Valuation Summary"
+    assert _summary_value(sheet, "Confidence") == "LOW - multiples-based valuation; DCF model not applicable"
+    assert _summary_value(sheet, "Reason") == "multiples selected"
+    assert _summary_tier_status(sheet, "Tier 4 - Multiples-Based Valuation") == (
+        "Used as primary result - within 70% of market price"
+    )

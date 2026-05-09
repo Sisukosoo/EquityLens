@@ -632,7 +632,74 @@ def test_reverse_dcf_handles_unreachable_market_price():
 
     assert result["implied_growth"] is None
     assert result["status"] == "UNREACHABLE"
-    assert "beyond 50%" in result["message"]
+    assert "could not solve within the search range" in result["message"]
+    assert "irrational" not in result["message"].lower()
+
+
+def test_reverse_dcf_failure_explains_depressed_margin_recovery():
+    tier1 = {
+        "assumptions": {
+            "revenue_growth": 0.02,
+            "revenue_growth_source": "test",
+            "ebit_margin": 0.018,
+            "capex_pct_revenue": 0.04,
+            "depreciation_pct_revenue": 0.03,
+            "working_capital_pct_revenue": 0.02,
+        }
+    }
+
+    result = build_reverse_dcf_analysis(
+        info={},
+        tier1=tier1,
+        latest_revenue=100.0,
+        latest_fcf=2.0,
+        wacc=0.08,
+        net_debt=0.0,
+        shares_outstanding=1_000_000.0,
+        current_price=10_000.0,
+        terminal_growth=0.025,
+        tax_rate=0.25,
+        historical_ebit_margin_average=0.056,
+    )
+
+    assert result["implied_growth"] is None
+    assert result["status"] == "UNREACHABLE"
+    assert "Current Tier 1 EBIT margin (1.8%)" in result["interpretation"]
+    assert "5-year average (5.6%)" in result["interpretation"]
+    assert "market is pricing margin recovery rather than revenue growth" in result["interpretation"]
+    assert "irrational" not in result["interpretation"].lower()
+
+
+def test_reverse_dcf_failure_for_healthy_margin_uses_generic_range_message():
+    tier1 = {
+        "assumptions": {
+            "revenue_growth": 0.02,
+            "revenue_growth_source": "test",
+            "ebit_margin": 0.20,
+            "capex_pct_revenue": 0.04,
+            "depreciation_pct_revenue": 0.03,
+            "working_capital_pct_revenue": 0.02,
+        }
+    }
+
+    result = build_reverse_dcf_analysis(
+        info={},
+        tier1=tier1,
+        latest_revenue=100.0,
+        latest_fcf=12.0,
+        wacc=0.08,
+        net_debt=0.0,
+        shares_outstanding=1_000_000.0,
+        current_price=10_000.0,
+        terminal_growth=0.025,
+        tax_rate=0.25,
+        historical_ebit_margin_average=0.22,
+    )
+
+    assert result["implied_growth"] is None
+    assert result["status"] == "UNREACHABLE"
+    assert "could not solve within the search range (-10% to +50% revenue growth)" in result["interpretation"]
+    assert "pricing factors not captured by the model" in result["interpretation"]
 
 
 def test_reverse_dcf_marks_missing_analyst_consensus_as_na():

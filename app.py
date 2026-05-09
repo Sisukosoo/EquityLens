@@ -33,15 +33,31 @@ from utils.calculations import (
     compare_companies,
 )
 from utils.fetcher import FinancialDataError, fetch_company_financials
-from utils.damodaran import build_beta_match
+from utils.damodaran import BETA_URLS, INDUSTRY_WHITELIST, build_beta_match
 from utils.excel_report import build_valuation_excel_report
-from utils.sanity_checks import run_sanity_checks
+from utils.sanity_checks import INCOMPATIBLE_BUSINESS_MODEL_SECTOR_FRAGMENTS, run_sanity_checks
 from utils.validation import (
+    COE_GLOBAL_URL,
+    COUNTRY_PREMIUM_URL,
+    TAX_RATE_URL,
+    WACC_URLS,
     get_damodaran_industry_cost_of_debt,
     get_damodaran_industry_cost_of_debt_details,
     validate_against_damodaran,
 )
-from utils.valuation import build_valuation_result, fetch_risk_free_rate
+from utils.valuation import (
+    DEFAULT_TERMINAL_GROWTH,
+    DCF_CAPEX_URLS,
+    DCF_MARGIN_URLS,
+    FALLBACK_DCF_MAX_DEVIATION,
+    MARKET_RISK_PREMIUM,
+    MULTIPLE_EV_EBITDA_URLS,
+    MULTIPLE_EV_SALES_URLS,
+    MULTIPLE_PB_URLS,
+    STANDARD_DCF_MAX_DEVIATION,
+    build_valuation_result,
+    fetch_risk_free_rate,
+)
 from utils.reporting import build_pdf_report
 from utils.visualizations import (
     create_balance_structure_chart,
@@ -588,17 +604,22 @@ def apply_custom_theme() -> None:
 
             .company-info-grid {{
                 display: grid;
-                grid-template-columns: repeat(4, minmax(0, 1fr));
+                grid-template-columns: repeat(5, minmax(0, 1fr));
+                grid-auto-rows: 1fr;
                 gap: 16px;
                 margin: 16px 0 18px;
             }}
 
             .company-info-card {{
+                height: 100%;
                 min-height: 88px;
                 background: var(--card);
                 border: 1px solid var(--border-subtle);
                 border-radius: 8px;
                 padding: 18px 20px;
+                display: flex;
+                flex-direction: column;
+                justify-content: flex-start;
             }}
 
             .company-info-label {{
@@ -625,15 +646,25 @@ def apply_custom_theme() -> None:
                 overflow-wrap: normal;
             }}
 
-            @media (max-width: 1100px) {{
+            @media (max-width: 1279px) {{
+                .company-info-grid {{
+                    grid-template-columns: repeat(3, minmax(0, 1fr));
+                }}
+            }}
+
+            @media (max-width: 767px) {{
                 .company-info-grid {{
                     grid-template-columns: repeat(2, minmax(0, 1fr));
                 }}
             }}
 
-            @media (max-width: 640px) {{
-                .company-info-grid {{
-                    grid-template-columns: 1fr;
+            @media (max-width: 420px) {{
+                .company-info-card {{
+                    padding: 14px 14px;
+                }}
+
+                .company-info-value {{
+                    font-size: 22px;
                 }}
             }}
 
@@ -675,6 +706,82 @@ def apply_custom_theme() -> None:
                 letter-spacing: 0;
                 font-variant-numeric: tabular-nums;
                 margin-bottom: 10px;
+            }}
+
+            .valuation-result-grid {{
+                display: grid;
+                grid-template-columns: repeat(3, minmax(0, 1fr));
+                gap: 16px;
+                margin: 16px 0;
+            }}
+
+            .valuation-result-card {{
+                min-height: 112px;
+                background: var(--card);
+                border: 1px solid var(--border-subtle);
+                border-radius: 8px;
+                padding: 16px;
+            }}
+
+            .valuation-result-label {{
+                color: var(--tertiary);
+                font-family: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+                font-size: 11px;
+                line-height: 1.2;
+                text-transform: uppercase;
+                letter-spacing: 0.06em;
+                font-weight: 600;
+                margin-bottom: 10px;
+            }}
+
+            .valuation-result-value {{
+                color: var(--text);
+                font-family: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+                font-size: 32px;
+                line-height: 1.18;
+                font-weight: 600;
+                font-variant-numeric: tabular-nums;
+                white-space: normal;
+                overflow-wrap: anywhere;
+            }}
+
+            .reverse-dcf-failure {{
+                margin: 12px 0 18px;
+                padding: 16px 18px;
+                border-left: 2px solid var(--brand);
+                border-top: 1px solid rgba(59,130,246,0.14);
+                border-right: 1px solid rgba(59,130,246,0.14);
+                border-bottom: 1px solid rgba(59,130,246,0.14);
+                border-radius: 6px;
+                background: rgba(59,130,246,0.08);
+            }}
+
+            .reverse-dcf-failure-title {{
+                color: var(--text);
+                font-family: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+                font-size: 15px;
+                line-height: 1.3;
+                font-weight: 600;
+                margin-bottom: 8px;
+            }}
+
+            .reverse-dcf-failure-body {{
+                color: var(--secondary);
+                font-size: 13px;
+                line-height: 1.5;
+                margin-bottom: 10px;
+            }}
+
+            .reverse-dcf-failure-meta {{
+                color: var(--tertiary);
+                font-size: 12px;
+                line-height: 1.4;
+            }}
+
+            @media (max-width: 900px) {{
+                .valuation-result-grid {{
+                    grid-template-columns: 1fr;
+                }}
             }}
 
             .pill {{
@@ -996,13 +1103,24 @@ def render_dcf_result_summary(valuation: dict, currency_code: str) -> None:
     dcf = valuation.get("dcf") or {}
     selected_tier = valuation.get("selected_dcf_tier") or {}
     raw_implied = dcf.get("implied_price")
-    current_price = valuation.get("current_price")
 
-    cols = st.columns(3)
-    cols[0].metric("Selected implied share price", format_share_price(raw_implied, currency_code))
-    cols[1].metric("Valuation method", selected_tier.get("method") or "N/A")
-    cols[2].metric("Upside / downside", format_percentage(dcf.get("upside") * 100 if dcf.get("upside") is not None else None))
+    valuation_rows = [
+        ("Selected implied share price", format_share_price(raw_implied, currency_code)),
+        ("Valuation method", selected_tier.get("method") or "N/A"),
+        ("Upside / downside", format_percentage(dcf.get("upside") * 100 if dcf.get("upside") is not None else None)),
+    ]
+    cards_html = "".join(
+        (
+            '<div class="valuation-result-card">'
+            f'<div class="valuation-result-label">{escape(label)}</div>'
+            f'<div class="valuation-result-value">{escape(str(value))}</div>'
+            '</div>'
+        )
+        for label, value in valuation_rows
+    )
+    st.markdown(f'<div class="valuation-result-grid">{cards_html}</div>', unsafe_allow_html=True)
     render_dcf_tier_notice(valuation)
+    render_reverse_dcf_analysis(valuation)
 
     with st.expander("Show all valuation tier attempts", expanded=False):
         tier_rows = []
@@ -1029,8 +1147,6 @@ def render_dcf_tier_notice(valuation: dict | None) -> None:
     if not valuation:
         return
     tier = valuation.get("dcf_tier")
-    selected = valuation.get("selected_dcf_tier") or {}
-    st.info(f"Selected valuation method: {selected.get('method') or 'N/A'}")
     if tier == 2:
         st.warning(
             "⚠ DCF model uses smoothed long-term averages because recent financials show cyclical distortion. "
@@ -1057,32 +1173,64 @@ def render_dcf_tier_notice(valuation: dict | None) -> None:
 
 def render_reverse_dcf_analysis(valuation: dict | None) -> None:
     """Render Reverse DCF implied growth diagnostics in the overview tab."""
+    display = reverse_dcf_display_model(valuation)
+    if display["case"] == "hidden":
+        return
     st.markdown("#### Reverse DCF - Implied Growth Analysis")
     # Reverse DCF is a diagnostic interpretation tool, not a valuation tier.
+    if display["case"] == "success":
+        cards_html = "".join(
+            (
+                '<div class="valuation-result-card">'
+                f'<div class="valuation-result-label">{escape(label)}</div>'
+                f'<div class="valuation-result-value">{escape(value)}</div>'
+                '</div>'
+            )
+            for label, value in display["cards"]
+        )
+        st.markdown(f'<div class="valuation-result-grid">{cards_html}</div>', unsafe_allow_html=True)
+        st.caption(display["interpretation"])
+        return
+    st.markdown(
+        (
+            '<div class="reverse-dcf-failure">'
+            '<div class="reverse-dcf-failure-title">Reverse DCF &mdash; Could not solve</div>'
+            f'<div class="reverse-dcf-failure-body">{escape(str(display["body"]))}</div>'
+            f'<div class="reverse-dcf-failure-meta">{escape(display["meta"])}</div>'
+            '</div>'
+        ),
+        unsafe_allow_html=True,
+    )
+
+
+def reverse_dcf_display_model(valuation: dict | None) -> dict:
+    """Return the display model for Reverse DCF diagnostics."""
     reverse = (valuation or {}).get("reverse_dcf") or {}
     if not reverse:
-        st.info("Generate the valuation report to calculate reverse DCF implied growth.")
-        return
-    rows = [
-        {
-            "Metric": "Implied growth rate from reverse DCF",
-            "Value": _format_growth_rate(reverse.get("implied_growth")),
-        },
-        {
-            "Metric": "Tier 1 assumed growth rate",
-            "Value": _format_growth_rate(reverse.get("tier1_growth")),
-        },
-        {
-            "Metric": "Analyst consensus growth rate",
-            "Value": _format_growth_rate(reverse.get("analyst_consensus_growth")),
-        },
-        {
-            "Metric": "Gap: implied vs Tier 1 assumed",
-            "Value": _format_growth_gap(reverse.get("growth_gap")),
-        },
-    ]
-    _render_financial_table(["Metric", "Value"], rows)
-    st.caption(reverse.get("interpretation") or reverse.get("message") or "Reverse DCF diagnostic unavailable.")
+        return {"case": "hidden"}
+    if _is_number(reverse.get("implied_growth")):
+        return {
+            "case": "success",
+            "cards": [
+                ("Market implied growth", _format_growth_rate(reverse.get("implied_growth"))),
+                ("Model assumed growth", _format_growth_rate(reverse.get("tier1_growth"))),
+                ("Analyst consensus", _format_growth_rate(reverse.get("analyst_consensus_growth"))),
+            ],
+            "interpretation": reverse.get("interpretation") or reverse.get("message") or "Reverse DCF diagnostic unavailable.",
+        }
+    return {
+        "case": "failure",
+        "body": reverse.get("interpretation") or reverse.get("message") or "Reverse DCF diagnostic unavailable.",
+        "meta": (
+            f"Tier 1 assumed growth: {_format_growth_rate(reverse.get('tier1_growth'))} | "
+            f"Analyst consensus: {_format_growth_rate(reverse.get('analyst_consensus_growth'))}"
+        ),
+    }
+
+
+def _is_number(value: float | int | None) -> bool:
+    """Return True for finite displayable numeric values."""
+    return value is not None and not pd.isna(value)
 
 
 def _format_growth_rate(value: float | int | None) -> str:
@@ -1256,6 +1404,7 @@ def render_company_header(data: dict) -> None:
     """Render basic company information with logo support."""
     info = data["info"]
     market_cap = info.get("marketCap")
+    share_price = info.get("currentPrice") or info.get("regularMarketPrice")
     logo_url = info.get("logo_url")
     currency_code = reporting_currency(data)
 
@@ -1278,6 +1427,7 @@ def render_company_header(data: dict) -> None:
         ("Ticker", data["ticker"]),
         ("Industry", info.get("industry") or "N/A"),
         ("Country", info.get("country") or "N/A"),
+        ("Share price", format_share_price(share_price, currency_code)),
         (
             "Market cap",
             format_large_number(
@@ -1599,6 +1749,46 @@ def render_dividends(dividend_metrics: pd.DataFrame, currency_code: str) -> None
     st.dataframe(dividend_metrics, use_container_width=True, hide_index=True)
 
 
+def render_statement_dataframe(frame: pd.DataFrame, statement_name: str) -> None:
+    """Render a historical statement table while hiding wholly incomplete display rows."""
+    display, excluded_periods = filter_incomplete_display_rows(frame)
+    if excluded_periods:
+        earliest = excluded_periods[0]
+        note = (
+            f"Earlier fiscal years ({earliest} and prior) excluded due to incomplete data from Yahoo Finance."
+            if len(excluded_periods) == 1
+            else f"Earlier fiscal years ({earliest}-{excluded_periods[-1]}) excluded due to incomplete data from Yahoo Finance."
+        )
+        st.caption(note)
+    st.dataframe(display, use_container_width=True, hide_index=True)
+
+
+def filter_incomplete_display_rows(frame: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
+    """Hide rows whose non-metadata numeric fields are entirely empty for display only."""
+    if frame.empty:
+        return frame, []
+    metadata_columns = {"year", "period", "period_end", "period_type"}
+    value_columns = [column for column in frame.columns if column not in metadata_columns]
+    if not value_columns:
+        return frame, []
+    numeric_values = frame[value_columns].apply(pd.to_numeric, errors="coerce")
+    empty_rows = numeric_values.isna().all(axis=1)
+    excluded = [
+        _display_period_label(row)
+        for _, row in frame.loc[empty_rows].iterrows()
+    ]
+    return frame.loc[~empty_rows].copy(), excluded
+
+
+def _display_period_label(row: pd.Series) -> str:
+    """Return a compact FY label for hidden-row notes."""
+    if pd.notna(row.get("period")):
+        return str(row.get("period")).split()[0]
+    if pd.notna(row.get("year")):
+        return f"FY{int(row.get('year'))}"
+    return "earlier FY"
+
+
 def render_surprises(surprise_metrics: pd.DataFrame) -> None:
     """Render earnings surprise analysis."""
     st.caption("Yahoo Finance usually exposes EPS surprise data more consistently than revenue consensus data.")
@@ -1706,35 +1896,207 @@ def render_methodology() -> None:
         {"Metric": "Dividend yield", "Formula": "Dividend per share / current share price"},
     ]
     _render_financial_table(["Metric", "Formula"], rows)
+    st.markdown("### Valuation Framework: 5-Tier Fallback")
+    _render_financial_table(["Tier", "Method", "Inputs", "Skip condition", "Acceptance"], methodology_tier_rows())
+    st.markdown("### CAPM and WACC")
+    st.markdown("#### CAPM")
+    _render_financial_table(["Component", "Formula / source"], methodology_capm_rows())
+    st.markdown("#### WACC and DCF Horizon")
+    _render_financial_table(["Component", "Formula / source"], methodology_wacc_rows())
+    st.markdown("### Damodaran Sector Matching")
+    for paragraph in methodology_sector_matching_paragraphs():
+        st.caption(paragraph)
+    st.markdown("### Reverse DCF")
+    for paragraph in methodology_reverse_dcf_paragraphs():
+        st.caption(paragraph)
+    st.markdown("### Sanity Checks: Two Parallel Pipelines")
+    _render_financial_table(["Pipeline", "Code check", "Displayed category / message"], methodology_sanity_check_rows())
+    st.markdown("### Business Model Compatibility Check")
+    st.caption(
+        "The operating-company DCF is flagged as structurally inappropriate for financial institutions, "
+        "asset managers, real estate vehicles, and similar business models when the matched Damodaran sector "
+        "contains one of the trigger fragments below."
+    )
+    _render_financial_table(["Trigger fragment"], methodology_business_model_rows())
+    st.caption(
+        "When triggered, Streamlit displays a critical warning and blocks Excel generation until the sidebar "
+        "override is checked. The Excel Summary tab shows a red critical banner, changes Confidence to "
+        "'CRITICAL - DCF model not appropriate for this business type. See Validation tab. Result should not be "
+        "used as a fair value estimate.', and changes the selected tier status to 'Computed but flagged - critical "
+        "sanity check applies. See Validation tab.'"
+    )
+    st.markdown("### Damodaran Excel Datasets Used")
+    st.caption("These NYU Stern Damodaran workbooks are loaded by the app for beta, WACC validation, DCF fallback assumptions, and sector multiples.")
+    _render_financial_table(["Purpose", "Region", "File", "URL"], damodaran_dataset_rows())
     st.markdown("### DCF Model Limitations")
     limitation_rows = [
         {
-            "Metric": "Companies in transition",
-            "Formula": "Recent capex booms, such as AI-driven datacenter buildouts, or temporary margin shocks can distort 3-5 year averages.",
+            "Category": "Companies in transition",
+            "Description": "Recent capex booms, such as AI-driven datacenter buildouts, or temporary margin shocks can distort 3-5 year averages.",
         },
         {
-            "Metric": "Cyclical industries",
-            "Formula": "Point-in-time assumptions struggle with cyclical sectors such as oil/gas, semiconductors, and paper.",
+            "Category": "Cyclical industries",
+            "Description": "Point-in-time assumptions struggle with cyclical sectors such as oil/gas, semiconductors, and paper.",
         },
         {
-            "Metric": "Negative or near-zero profitability",
-            "Formula": "DCF can produce mathematically negative equity values; the user-facing implied price is clamped to zero while the raw result remains visible.",
+            "Category": "Negative or near-zero profitability",
+            "Description": "DCF can produce mathematically negative equity values; the user-facing implied price is clamped to zero while the raw result remains visible.",
         },
         {
-            "Metric": "Growth companies",
-            "Formula": "Historical CAGR may understate future growth for AI, cloud, or other transition stories.",
+            "Category": "Growth companies",
+            "Description": "Historical CAGR may understate future growth for AI, cloud, or other transition stories.",
         },
         {
-            "Metric": "Quality premium",
-            "Formula": "Markets may price brand strength, switching costs, and network effects that historical financials do not capture.",
+            "Category": "Quality premium",
+            "Description": "Markets may price brand strength, switching costs, and network effects that historical financials do not capture.",
         },
     ]
-    _render_financial_table(["Metric", "Formula"], limitation_rows)
-    st.caption(
-        "Model results observed during testing: KONE -29%, Microsoft -51%, Apple -65%, JNJ -11%, "
-        "Neste -100% (clamped). Stable companies show DCF closer to market price; companies in transition show larger gaps."
-    )
+    _render_financial_table(["Category", "Description"], limitation_rows)
     st.caption(DATA_SOURCES)
+
+
+def methodology_tier_rows() -> list[dict[str, str]]:
+    """Return DCF tier methodology rows from code constants and tier definitions."""
+    standard_acceptance = _methodology_acceptance_text(STANDARD_DCF_MAX_DEVIATION)
+    fallback_acceptance = _methodology_acceptance_text(FALLBACK_DCF_MAX_DEVIATION)
+    return [
+        {
+            "Tier": "Tier 1",
+            "Method": "Standard DCF",
+            "Inputs": "Revenue growth from historical revenue CAGR; EBIT margin from latest FY actual; D&A from recent historical average; CapEx from historical CapEx/revenue or default source; working capital from historical current assets/current liabilities or default source.",
+            "Skip condition": "Not run when latest revenue, latest EBIT margin, or shares outstanding are unavailable.",
+            "Acceptance": standard_acceptance,
+        },
+        {
+            "Tier": "Tier 2",
+            "Method": "Smoothed DCF",
+            "Inputs": "Revenue growth from 5-year historical CAGR floored at 0%; EBIT margin from 5-year average when available otherwise 3-year; D&A and CapEx from 5-year historical averages; same working-capital assumption as Tier 1.",
+            "Skip condition": "Same availability gate as Tier 1; attempted only if no earlier tier has been selected.",
+            "Acceptance": fallback_acceptance,
+        },
+        {
+            "Tier": "Tier 3",
+            "Method": "Sector Benchmark DCF",
+            "Inputs": f"Revenue growth uses DEFAULT_TERMINAL_GROWTH ({DEFAULT_TERMINAL_GROWTH:.1%}); EBIT margin and CapEx/revenue use Damodaran sector benchmarks when available; D&A uses company 5-year historical average; same working-capital assumption as Tier 1.",
+            "Skip condition": "Skipped when Damodaran sector EBIT margin is non-positive and its source starts with 'Damodaran sector benchmark'.",
+            "Acceptance": fallback_acceptance,
+        },
+        {
+            "Tier": "Tier 4",
+            "Method": "Multiples-Based Valuation",
+            "Inputs": "Damodaran sector EV/EBITDA, EV/Sales, and P/Book multiples. EV multiples convert enterprise value to equity value by subtracting net debt; P/Book multiplies tangible book value per share. Selected estimate is the median of positive available implied prices.",
+            "Skip condition": "Rejected when no positive multiple-based implied prices are available, or when an accepted estimate is less than or equal to 50% of tangible book value per share.",
+            "Acceptance": f"{fallback_acceptance}; additionally must be above 50% of tangible book value per share when tangible book value is available.",
+        },
+        {
+            "Tier": "Tier 5",
+            "Method": "Tangible Book Value Floor",
+            "Inputs": "Total equity divided by shares outstanding.",
+            "Skip condition": "No skip condition in the fallback path; used as the final reference floor when Tiers 1-4 do not produce an accepted result.",
+            "Acceptance": "Reference floor only; accepted field is positive tangible book value per share, but Tier 5 is selected only when no earlier tier is accepted.",
+        },
+    ]
+
+
+def _methodology_acceptance_text(max_deviation: float) -> str:
+    """Describe the tier acceptance gate using source-code threshold constants."""
+    return f"Implied price must be positive; if market price is available, |implied / market - 1| must be <= {max_deviation:.0%}."
+
+
+def methodology_capm_rows() -> list[dict[str, str]]:
+    """Return CAPM methodology rows based on valuation.py sources."""
+    return [
+        {"Component": "CAPM formula", "Formula / source": f"Cost of equity = risk-free rate + levered beta x market risk premium. MARKET_RISK_PREMIUM = {MARKET_RISK_PREMIUM:.1%}."},
+        {"Component": "Risk-free rate", "Formula / source": "Yahoo Finance ^TNX latest close over the last 7 days; close is divided by 100 when the quote is above 1. Sanity range is 0.5%-15%."},
+        {"Component": "Beta source", "Formula / source": "Damodaran industry unlevered beta from the matched beta workbook, re-levered with beta_L = beta_U x (1 + (1 - tax rate) x D/E)."},
+        {"Component": "Equity risk premium", "Formula / source": f"Fixed source-code constant MARKET_RISK_PREMIUM = {MARKET_RISK_PREMIUM:.1%}."},
+    ]
+
+
+def methodology_wacc_rows() -> list[dict[str, str]]:
+    """Return WACC and DCF horizon methodology rows based on valuation.py sources."""
+    return [
+        {"Component": "WACC formula", "Formula / source": "WACC = (E/V x cost of equity) + (D/V x cost of debt x (1 - tax rate))."},
+        {"Component": "Cost of debt", "Formula / source": "abs(interest expense) / abs(total debt). If missing or outside the 1%-15% range, Damodaran industry cost of debt is used when available."},
+        {"Component": "Tax rate", "Formula / source": "abs(income tax expense) / abs(pretax income), with fallback to Damodaran industry tax rate or 25%. Values outside 0%-40% use the fallback."},
+        {"Component": "Capital structure", "Formula / source": "Equity weight = market cap / (market cap + total debt); debt weight = total debt / (market cap + total debt). Book debt is used when market debt is unavailable."},
+        {"Component": "Projection horizon", "Formula / source": "Five annual forecast years: build_dcf_forecast iterates year 1 through year 5."},
+        {"Component": "Terminal growth", "Formula / source": f"Historical revenue CAGR over the latest available 5-year window, capped to the 1.5%-{DEFAULT_TERMINAL_GROWTH:.1%} terminal range. If unavailable, DEFAULT_TERMINAL_GROWTH = {DEFAULT_TERMINAL_GROWTH:.1%}."},
+    ]
+
+
+def methodology_sector_matching_paragraphs() -> list[str]:
+    """Return Damodaran matching explanation based on damodaran.py."""
+    whitelist_items = ", ".join(f"{source} -> {target}" for source, target in sorted(INDUSTRY_WHITELIST.items()))
+    return [
+        "The app loads the Damodaran beta workbook selected by ticker region and normalizes the Damodaran industry table before matching.",
+        "Matching first checks a curated exact mapping table for known ambiguous yfinance industry labels. Current mappings are: " + whitelist_items + ".",
+        "If no curated mapping applies, the app uses rapidfuzz token_set_ratio against Damodaran industry choices, with a difflib fallback when rapidfuzz is unavailable. The top five candidates are retained for debug display.",
+        "If match confidence is below 70%, the sidebar asks the user to select a Damodaran industry manually. Selecting an override calls build_beta_match with selected_industry, sets confidence to 100%, and uses the selected Damodaran row for beta and benchmark fields.",
+    ]
+
+
+def methodology_reverse_dcf_paragraphs() -> list[str]:
+    """Return Reverse DCF explanation based on valuation.py and app.py rendering."""
+    return [
+        "Reverse DCF is a diagnostic tool, not a valuation tier. It holds Tier 1 Standard DCF inputs constant and solves only the year 1-5 revenue growth rate that would make the DCF implied share price equal the current market price.",
+        "The solver searches from -10% to +50% revenue growth. It uses scipy.optimize.brentq with xtol=1e-6 and maxiter=100 when scipy is available, otherwise a deterministic bisection fallback with tolerance 1e-6 and max_iterations=100.",
+        "Case A in the Streamlit UI is a successful solve with numeric implied growth, model assumed growth, and analyst consensus cards. Case B is a failed or unreachable solve, shown as a 'Reverse DCF - Could not solve' box with Tier 1 growth and analyst consensus context. Case C hides the section before valuation has been computed.",
+        "For cyclical companies, the failure message can explicitly state that current Tier 1 EBIT margin is below 50% of the 5-year average, suggesting the market is pricing margin recovery rather than revenue growth.",
+    ]
+
+
+def methodology_sanity_check_rows() -> list[dict[str, str]]:
+    """Return the two sanity-check pipelines from sanity_checks.py."""
+    return [
+        {"Pipeline": "run_sanity_checks()", "Code check": "_check_business_model_compatibility", "Displayed category / message": "Business Model Compatibility"},
+        {"Pipeline": "run_sanity_checks()", "Code check": "_check_default_assumptions", "Displayed category / message": "Default assumptions"},
+        {"Pipeline": "run_sanity_checks()", "Code check": "_check_beta", "Displayed category / message": "Levered beta is outside the usual 0-3 range; D/E ratio is above 5.0"},
+        {"Pipeline": "run_sanity_checks()", "Code check": "_check_costs", "Displayed category / message": "Risk-free rate outside 0.5%-15%; cost of equity below risk-free rate; cost of equity above 25%; WACC outside 3%-20%; cost of debt outside 1%-15%; WACC above cost of equity"},
+        {"Pipeline": "run_sanity_checks()", "Code check": "_check_dcf", "Displayed category / message": "Terminal growth >= WACC; terminal growth above 4%; implied price vs market sanity messages"},
+        {"Pipeline": "run_sanity_checks()", "Code check": "_check_tax", "Displayed category / message": "Tax rate is outside the 0%-40% range"},
+        {"Pipeline": "Excel-only analyst checks (build_excel_sanity_checks)", "Code check": "_check_ebit_margin_outlier", "Displayed category / message": "Margin volatility"},
+        {"Pipeline": "Excel-only analyst checks (build_excel_sanity_checks)", "Code check": "_check_cost_of_debt_context", "Displayed category / message": "Cost of debt context"},
+        {"Pipeline": "Excel-only analyst checks (build_excel_sanity_checks)", "Code check": "_check_effective_tax_context", "Displayed category / message": "Tax structure"},
+        {"Pipeline": "Excel-only analyst checks (build_excel_sanity_checks)", "Code check": "_check_beta_methodology_gap", "Displayed category / message": "Beta methodology"},
+        {"Pipeline": "Excel-only analyst checks (build_excel_sanity_checks)", "Code check": "_check_tier_price_gap", "Displayed category / message": "Margin assumption sensitivity"},
+        {"Pipeline": "Excel-only analyst checks (build_excel_sanity_checks)", "Code check": "_check_implied_price_vs_market", "Displayed category / message": "Implied price vs market"},
+    ]
+
+
+def methodology_business_model_rows() -> list[dict[str, str]]:
+    """Return exact business-model incompatibility trigger fragments from sanity_checks.py."""
+    return [{"Trigger fragment": fragment} for fragment in INCOMPATIBLE_BUSINESS_MODEL_SECTOR_FRAGMENTS]
+
+
+def damodaran_dataset_rows() -> list[dict[str, str]]:
+    """Return all Damodaran workbook URLs used by the application."""
+    rows: list[dict[str, str]] = []
+    dataset_groups = [
+        ("Industry beta / D/E / tax / cost of debt", BETA_URLS),
+        ("WACC validation and cost of debt fallback", WACC_URLS),
+        ("Tier 3 EBIT margin benchmark", DCF_MARGIN_URLS),
+        ("Tier 3 CapEx / sales benchmark", DCF_CAPEX_URLS),
+        ("Tier 4 EV/EBITDA multiple", MULTIPLE_EV_EBITDA_URLS),
+        ("Tier 4 EV/Sales multiple", MULTIPLE_EV_SALES_URLS),
+        ("Tier 4 P/Book multiple", MULTIPLE_PB_URLS),
+    ]
+    for purpose, mapping in dataset_groups:
+        for region, url in mapping.items():
+            rows.append({"Purpose": purpose, "Region": region, "File": _url_filename(url), "URL": url})
+    supplemental = [
+        ("Supplemental cost of equity validation", "global", COE_GLOBAL_URL),
+        ("Supplemental industry tax-rate validation", "global", TAX_RATE_URL),
+        ("Country risk premium lookup", "global", COUNTRY_PREMIUM_URL),
+    ]
+    for purpose, region, url in supplemental:
+        rows.append({"Purpose": purpose, "Region": region, "File": _url_filename(url), "URL": url})
+    return rows
+
+
+def _url_filename(url: str) -> str:
+    """Return a short filename from a URL for Methodology display."""
+    return str(url).rstrip("/").rsplit("/", 1)[-1]
 
 
 def render_debug_view(data: dict, beta_match, damodaran_table: pd.DataFrame | None) -> None:
@@ -1989,7 +2351,7 @@ def render_single_company_analysis(data: dict, beta_match=None, damodaran_table:
                 use_container_width=True,
                 config=chart_config("margins"),
             )
-        st.dataframe(income_metrics, use_container_width=True, hide_index=True)
+        render_statement_dataframe(income_metrics, "Income Statement")
 
     with tabs[2]:
         left, right = st.columns([2, 1])
@@ -2004,7 +2366,7 @@ def render_single_company_analysis(data: dict, beta_match=None, damodaran_table:
             st.metric("Equity ratio", format_percentage(latest.get("equity_ratio")))
             net_label, net_value, net_help = net_debt_display(latest.get("net_debt"), money_suffix(currency_code))
             st.metric(f"{net_label} ({latest_fy_label(balance_metrics)})", net_value, help=net_help)
-        st.dataframe(balance_metrics, use_container_width=True, hide_index=True)
+        render_statement_dataframe(balance_metrics, "Balance Sheet")
 
     with tabs[3]:
         st.plotly_chart(
@@ -2012,7 +2374,7 @@ def render_single_company_analysis(data: dict, beta_match=None, damodaran_table:
             use_container_width=True,
             config=chart_config("cash_flow"),
         )
-        st.dataframe(cash_flow_metrics, use_container_width=True, hide_index=True)
+        render_statement_dataframe(cash_flow_metrics, "Cash Flow")
 
     with tabs[4]:
         render_dividends(dividend_metrics, currency_code)
@@ -2209,3 +2571,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
