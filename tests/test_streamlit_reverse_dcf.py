@@ -24,7 +24,7 @@ def test_reverse_dcf_display_model_renders_success_case_cards():
     assert display["cards"] == [
         ("Market implied growth", "7.4%"),
         ("Model assumed growth", "5.6%"),
-        ("Analyst consensus", "9.9%"),
+        ("Yahoo revenue growth estimate", "9.9%"),
     ]
     assert display["interpretation"] == "Market pricing is consistent with model assumptions."
 
@@ -49,4 +49,4 @@ def test_reverse_dcf_display_model_renders_neste_failure_case():
 
     assert display["case"] == "failure"
     assert display["body"] == message
-    assert display["meta"] == "Tier 1 assumed growth: -9.6% | Analyst consensus: 2.9%"
+    assert display["meta"] == "Tier 1 assumed growth: -9.6% | Yahoo revenue growth estimate: 2.9%"

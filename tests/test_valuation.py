@@ -702,7 +702,7 @@ def test_reverse_dcf_failure_for_healthy_margin_uses_generic_range_message():
     assert "pricing factors not captured by the model" in result["interpretation"]
 
 
-def test_reverse_dcf_marks_missing_analyst_consensus_as_na():
+def test_reverse_dcf_marks_missing_yahoo_revenue_growth_estimate_as_na():
     tier1 = {
         "assumptions": {
             "revenue_growth": 0.03,
@@ -728,4 +728,4 @@ def test_reverse_dcf_marks_missing_analyst_consensus_as_na():
     )
 
     assert result["analyst_consensus_growth"] is None
-    assert result["analyst_consensus_source"] == "N/A - yfinance revenueGrowth/earningsGrowth unavailable"
+    assert result["analyst_consensus_source"] == "N/A - yfinance revenueGrowth unavailable"

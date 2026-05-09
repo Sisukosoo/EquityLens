@@ -993,15 +993,14 @@ def _bisect_root(function, low: float, high: float, tolerance: float = 1e-6, max
 
 
 def _analyst_consensus_growth(info: dict[str, Any]) -> tuple[float | None, str]:
-    """Return yfinance analyst growth if available, without fabricating missing consensus data."""
-    for key in ("revenueGrowth", "earningsGrowth"):
-        value = _ratio_like_to_decimal((info or {}).get(key))
-        if value is not None:
-            return value, f"yfinance {key}"
+    """Return yfinance revenueGrowth if available, without fabricating missing estimates."""
+    value = _ratio_like_to_decimal((info or {}).get("revenueGrowth"))
+    if value is not None:
+        return value, "yfinance revenueGrowth"
     recommendation = (info or {}).get("recommendationKey")
     if recommendation:
-        return None, f"N/A - yfinance revenueGrowth/earningsGrowth unavailable; recommendationKey={recommendation}"
-    return None, "N/A - yfinance revenueGrowth/earningsGrowth unavailable"
+        return None, f"N/A - yfinance revenueGrowth unavailable; recommendationKey={recommendation}"
+    return None, "N/A - yfinance revenueGrowth unavailable"
 
 
 def _reverse_dcf_interpretation(implied_growth: float | None, tier1_growth: float | None, failure_message: str | None) -> str:

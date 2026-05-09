@@ -582,7 +582,7 @@ def create_earnings_surprise_chart(surprise_metrics: pd.DataFrame) -> go.Figure:
     )
     fig.add_hline(y=0, line_color=GRID_SUBTLE, line_width=1)
     fig.update_yaxes(ticksuffix="%")
-    return apply_chart_theme(fig, "Earnings surprise vs analyst consensus", height=420)
+    return apply_chart_theme(fig, "Earnings surprise vs analyst EPS estimate", height=420)
 
 
 def create_radar_comparison_chart(comparison_frame: pd.DataFrame) -> go.Figure:

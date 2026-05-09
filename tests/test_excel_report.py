@@ -157,7 +157,7 @@ def _build_sample_workbook_bytes_with_statements(
             "tier1_growth": 0.025,
             "tier1_growth_source": "1-year growth rate (FY2023-FY2024)",
             "analyst_consensus_growth": None,
-            "analyst_consensus_source": "yfinance earningsGrowth",
+            "analyst_consensus_source": "yfinance revenueGrowth",
             "growth_gap": 0.035,
             "interpretation": "Market is pricing in higher growth than the model assumes - this explains the negative valuation gap.",
             "source": "Reverse DCF (solved from market price)",
@@ -235,7 +235,7 @@ def test_excel_report_reverse_dcf_sources_are_row_specific():
     assert sources == [
         "Solved from current market price using Tier 1 DCF inputs",
         "Same as Tier 1 DCF assumption: 1-year growth rate (FY2023-FY2024)",
-        "yfinance earningsGrowth",
+        "yfinance revenueGrowth",
         "Calculated: implied minus Tier 1 assumed (in percentage points)",
         None,
     ]

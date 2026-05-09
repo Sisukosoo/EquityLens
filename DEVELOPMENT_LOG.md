@@ -187,7 +187,7 @@ Initial test results showed Apple at roughly -65% versus market and Microsoft at
 
 Rather than calibrating the model to produce more flattering numbers, I added a **reverse DCF** capability. The reverse DCF holds all Tier 1 DCF inputs constant except revenue growth, then solves for the growth rate that would make the implied price equal the current market price. This turned the model from a calculator that says "the value is X" into a diagnostic tool that explains the gap between market expectations and historical performance.
 
-For Microsoft and Alphabet, reverse DCF revealed market-implied growth of roughly 43%, against analyst consensus around 18-22% and historical CAGR around 12%. The gap is real, consistent across two large technology companies, and informative: the market is pricing AI-era growth that is far above what the historical inputs alone justify.
+For Microsoft and Alphabet, reverse DCF revealed market-implied growth of roughly 43%, against Yahoo revenue growth estimates around 18-22% and historical CAGR around 12%. The gap is real, consistent across two large technology companies, and informative: the market is pricing AI-era growth that is far above what the historical inputs alone justify.
 
 ### Phase 2 - Excel Report Quality Fixes
 
@@ -274,11 +274,11 @@ When this check fires, Streamlit gates Excel report generation until the user ex
 
 **Mature operating companies in stable sectors.** The model produces defensible results for companies such as JNJ, KO, XOM, and KNEBV.HE. They are different sectors, different geographies, and different capital structures, but the model treats them consistently.
 
-**Reverse DCF as a diagnostic.** The most useful output of reverse DCF is the comparison between market-implied growth, model-assumed growth, and analyst consensus. Three patterns emerged:
+**Reverse DCF as a diagnostic.** The most useful output of reverse DCF is the comparison between market-implied growth, model-assumed growth, and the Yahoo revenue growth estimate. Three patterns emerged:
 
 - Small gap: model assumptions are broadly consistent with market expectations.
-- Large positive gap with high consensus: market prices a growth premium.
-- Positive gap with low or negative consensus: market may be pricing mean reversion that consensus has not yet reflected.
+- Large positive gap with a high Yahoo revenue growth estimate: market prices a growth premium.
+- Positive gap with a low or negative Yahoo revenue growth estimate: market may be pricing mean reversion that the estimate has not yet reflected.
 
 The model surfaces the gap. The analyst decides what to do with it.
 
@@ -290,7 +290,7 @@ The model surfaces the gap. The analyst decides what to do with it.
 
 **Growth companies with significant AI or platform premium.** AAPL, MSFT, and GOOGL all produce large negative deviations under the conservative historical DCF. This is expected. Historical CAGR cannot capture forward-looking expectations such as AI optionality, cloud platform strength, or ecosystem durability. Reverse DCF is the recommended interpretive lens for these cases.
 
-A possible future enhancement is a separate analyst-consensus DCF mode using consensus growth for the first forecast years and then fading toward a longer-term assumption. This was deliberately not implemented in the current version because it would blur the line between historical-data DCF and consensus-driven DCF.
+A possible future enhancement is a separate external-estimate DCF mode using forward revenue estimates for the first forecast years and then fading toward a longer-term assumption. This was deliberately not implemented in the current version because it would blur the line between historical-data DCF and estimate-driven DCF.
 
 **Mature companies in extended slowdown periods.** Companies such as Nestle and Procter & Gamble can look undervalued or over-penalized when the recent historical window captures a slowdown. The model reflects the historical data honestly, but it does not forecast an operational recovery unless the recovery already appears in the data.
 
@@ -350,7 +350,7 @@ EquityLens is not a fund-grade valuation system. Specifically:
 
 - It does not run Monte Carlo simulations or probability-weighted scenarios.
 - It does not implement a fade period between explicit forecast growth and terminal growth.
-- It does not include an analyst-consensus-driven DCF tier.
+- It does not include an external-estimate-driven DCF tier.
 - It does not value banks, REITs, or insurers with their proper sector-specific models.
 - It relies on yfinance data availability and therefore inherits yfinance data gaps.
 

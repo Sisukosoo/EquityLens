@@ -796,10 +796,10 @@ def _write_reverse_dcf_section(sheet, start_row: int, valuation: dict[str, Any])
             f"Same as Tier 1 DCF assumption: {reverse.get('tier1_growth_source') or 'see Tier 1 Assumptions section'}",
         ),
         (
-            "Analyst consensus growth rate",
+            "Yahoo revenue growth estimate",
             reverse.get("analyst_consensus_growth"),
             "pct",
-            reverse.get("analyst_consensus_source") or "N/A - yfinance revenueGrowth/earningsGrowth unavailable",
+            reverse.get("analyst_consensus_source") or "N/A - yfinance revenueGrowth unavailable",
         ),
         (
             "Gap: implied vs Tier 1 assumed",

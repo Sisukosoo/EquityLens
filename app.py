@@ -1214,7 +1214,7 @@ def reverse_dcf_display_model(valuation: dict | None) -> dict:
             "cards": [
                 ("Market implied growth", _format_growth_rate(reverse.get("implied_growth"))),
                 ("Model assumed growth", _format_growth_rate(reverse.get("tier1_growth"))),
-                ("Analyst consensus", _format_growth_rate(reverse.get("analyst_consensus_growth"))),
+                ("Yahoo revenue growth estimate", _format_growth_rate(reverse.get("analyst_consensus_growth"))),
             ],
             "interpretation": reverse.get("interpretation") or reverse.get("message") or "Reverse DCF diagnostic unavailable.",
         }
@@ -1223,7 +1223,7 @@ def reverse_dcf_display_model(valuation: dict | None) -> dict:
         "body": reverse.get("interpretation") or reverse.get("message") or "Reverse DCF diagnostic unavailable.",
         "meta": (
             f"Tier 1 assumed growth: {_format_growth_rate(reverse.get('tier1_growth'))} | "
-            f"Analyst consensus: {_format_growth_rate(reverse.get('analyst_consensus_growth'))}"
+            f"Yahoo revenue growth estimate: {_format_growth_rate(reverse.get('analyst_consensus_growth'))}"
         ),
     }
 
@@ -1793,7 +1793,7 @@ def render_surprises(surprise_metrics: pd.DataFrame) -> None:
     """Render earnings surprise analysis."""
     st.caption("Yahoo Finance usually exposes EPS surprise data more consistently than revenue consensus data.")
     if surprise_metrics.empty:
-        st.info("Analyst consensus surprise data is not available for this ticker.")
+        st.info("Analyst EPS surprise data is not available for this ticker.")
         return
 
     st.plotly_chart(
@@ -2041,7 +2041,7 @@ def methodology_reverse_dcf_paragraphs() -> list[str]:
     return [
         "Reverse DCF is a diagnostic tool, not a valuation tier. It holds Tier 1 Standard DCF inputs constant and solves only the year 1-5 revenue growth rate that would make the DCF implied share price equal the current market price.",
         "The solver searches from -10% to +50% revenue growth. It uses scipy.optimize.brentq with xtol=1e-6 and maxiter=100 when scipy is available, otherwise a deterministic bisection fallback with tolerance 1e-6 and max_iterations=100.",
-        "Case A in the Streamlit UI is a successful solve with numeric implied growth, model assumed growth, and analyst consensus cards. Case B is a failed or unreachable solve, shown as a 'Reverse DCF - Could not solve' box with Tier 1 growth and analyst consensus context. Case C hides the section before valuation has been computed.",
+        "Case A in the Streamlit UI is a successful solve with numeric implied growth, model assumed growth, and Yahoo revenue growth estimate cards. Case B is a failed or unreachable solve, shown as a 'Reverse DCF - Could not solve' box with Tier 1 growth and Yahoo revenue growth estimate context. Case C hides the section before valuation has been computed.",
         "For cyclical companies, the failure message can explicitly state that current Tier 1 EBIT margin is below 50% of the 5-year average, suggesting the market is pricing margin recovery rather than revenue growth.",
     ]
 
@@ -2571,4 +2571,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
