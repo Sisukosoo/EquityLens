@@ -1,5 +1,0 @@
-2026-05-04T23:54:24.266350 | Validation run for industry=Software - Infrastructure, matched=Software (Internet)
-2026-05-04T23:54:24.267911 | {'Metric': 'Cost of Equity', 'Calculated': 0.11422604729288058, 'Damodaran (industry avg)': 0.11481495478100626, 'Difference': -0.0005889074881256784, 'Status': '✓ OK', 'Note': ''}
-2026-05-04T23:54:24.268681 | {'Metric': 'Cost of Debt', 'Calculated': 0.03936423054070113, 'Damodaran (industry avg)': 0.052913, 'Difference': -0.013548769459298872, 'Status': '✓ OK', 'Note': ''}
-2026-05-04T23:54:24.269406 | {'Metric': 'WACC', 'Calculated': 0.11264418398469989, 'Damodaran (industry avg)': 0.10658673852546652, 'Difference': 0.006057445459233368, 'Status': '✓ OK', 'Note': ''}
-2026-05-04T23:54:24.289418 | {'Metric': 'Tax rate', 'Calculated': 0.17629644009803683, 'Damodaran (industry avg)': 0.25, 'Difference': -0.07370355990196317, 'Status': '✓ OK', 'Note': "Effective tax rate consistent with United States's corporate tax rate"}

@@ -1,5 +1,0 @@
-2026-05-04T17:34:28.564214 | Validation run for industry=Consumer Electronics, matched=Electronics (Consumer & Office)
-2026-05-04T17:34:28.566436 | {'Metric': 'Cost of Equity', 'Calculated': 0.09619238542417147, 'Damodaran (industry avg)': 0.07812261962427852, 'Difference': 0.018069765799892945, 'Status': '✓ OK'}
-2026-05-04T17:34:28.567877 | {'Metric': 'Cost of Debt', 'Calculated': 0.03986539221748077, 'Damodaran (industry avg)': 0.060195, 'Difference': -0.02032960778251923, 'Status': '⚠ Review'}
-2026-05-04T17:34:28.568586 | {'Metric': 'WACC', 'Calculated': 0.09470749780257563, 'Damodaran (industry avg)': 0.07631357052138382, 'Difference': 0.01839392728119181, 'Status': '✓ OK'}
-2026-05-04T17:34:28.588721 | {'Metric': 'Tax rate', 'Calculated': 0.15610002335586043, 'Damodaran (industry avg)': 0.0, 'Difference': 0.15610002335586043, 'Status': '✗ Check'}
