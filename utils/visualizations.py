@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pandas as pd
-import plotly.express as px
 import plotly.graph_objects as go
 
 from utils.chart_theme import (
@@ -643,49 +642,3 @@ def create_radar_comparison_chart(comparison_frame: pd.DataFrame) -> go.Figure:
         }
     )
     return apply_chart_theme(fig, "Normalized peer radar comparison", height=520)
-
-
-def create_comparison_chart(comparison_frame: pd.DataFrame) -> go.Figure:
-    """Create a comparison bar chart for selected KPIs."""
-    if comparison_frame.empty:
-        return _empty_chart("Company comparison")
-
-    value_vars = ["revenue", "roe", "roce", "equity_ratio", "pe_ratio", "ev_to_ebitda"]
-    available_vars = [column for column in value_vars if column in comparison_frame.columns]
-    if not available_vars:
-        return _empty_chart("Company comparison")
-
-    melted = comparison_frame.melt(
-        id_vars=["company", "ticker"],
-        value_vars=available_vars,
-        var_name="metric",
-        value_name="value",
-    ).dropna(subset=["value"])
-
-    metric_labels = {
-        "revenue": "Revenue (reported M)",
-        "roe": "ROE (%)",
-        "roce": "ROCE (%)",
-        "equity_ratio": "Equity ratio (%)",
-        "pe_ratio": "P/E",
-        "ev_to_ebitda": "EV/EBITDA",
-    }
-    melted["metric"] = melted["metric"].map(metric_labels)
-
-    fig = px.bar(
-        melted,
-        x="metric",
-        y="value",
-        color="ticker",
-        barmode="group",
-        text_auto=".1f",
-        color_discrete_sequence=[TEAL, SLATE_BLUE, PRIMARY_BLUE],
-        labels={"metric": "Metric", "value": "Value", "ticker": "Ticker"},
-    )
-    fig.update_traces(
-        textposition="outside",
-        hovertemplate="%{x}<br>%{fullData.name}: %{y:,.1f}<extra></extra>",
-    )
-    fig.update_xaxes(title_text=None)
-    fig.update_yaxes(title_text=None)
-    return apply_chart_theme(fig, "Latest-year KPI comparison", height=480)

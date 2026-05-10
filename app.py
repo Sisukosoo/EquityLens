@@ -65,7 +65,6 @@ from utils.reporting import build_pdf_report
 from utils.visualizations import (
     create_balance_structure_chart,
     create_cash_flow_chart,
-    create_comparison_chart,
     create_dividend_chart,
     create_earnings_surprise_chart,
     create_margin_chart,
@@ -2495,19 +2494,11 @@ def render_comparison(primary_data: dict, comparison_ticker: str) -> None:
             "Comparison companies report in different currencies. Monetary statement values are not converted; "
             "use margin and ratio metrics for cleaner peer comparison."
         )
-    left, right = st.columns([0.48, 0.52])
-    with left:
-        st.plotly_chart(
-            create_radar_comparison_chart(comparison_frame),
-            use_container_width=True,
-            config=chart_config("peer_radar"),
-        )
-    with right:
-        st.plotly_chart(
-            create_comparison_chart(comparison_frame),
-            use_container_width=True,
-            config=chart_config("peer_comparison"),
-        )
+    st.plotly_chart(
+        create_radar_comparison_chart(comparison_frame),
+        use_container_width=True,
+        config=chart_config("peer_radar"),
+    )
     fy_columns = [
         "company",
         "ticker",

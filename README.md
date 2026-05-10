@@ -13,6 +13,7 @@ A Streamlit app that pulls company financials from yfinance and produces a DCF v
 ## What it does
 
 - Pulls company financials, share price, beta, and Yahoo revenue growth estimate data from Yahoo Finance via yfinance.
+- Lets the user compare two tickers side by side with a normalized peer radar chart, fiscal-year metrics, and TTM market multiples.
 - Matches the company to a Damodaran (NYU Stern) industry sector. From there it pulls sector benchmarks for beta, cost of debt, EBIT margin, CapEx, and EV/EBITDA, EV/Sales, P/Book multiples.
 - Re-levers the Damodaran industry beta to the company's capital structure.
 - Builds CAPM cost of equity and WACC from company financials. The risk-free rate is matched to the company's reporting currency where available. Sector fallbacks fill in where company data is missing.
