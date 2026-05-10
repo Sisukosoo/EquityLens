@@ -13,6 +13,8 @@ from utils.valuation import (
     MULTIPLE_PB_URLS,
     _build_dcf_tier_results,
     _build_multiples_tier,
+    detect_risk_free_currency,
+    fetch_risk_free_rate_for_currency,
     _historical_revenue_growth_assumption,
     _historical_working_capital_assumption,
     _lookup_damodaran_sector_metric,
@@ -36,6 +38,54 @@ def test_capm_basic():
     erp = 0.055
     expected = 0.04 + 1.2 * 0.055
     assert abs(calculate_capm(rf, beta, erp) - expected) < 0.0001
+
+
+def test_detect_risk_free_currency_prefers_financial_currency():
+    data = {
+        "ticker": "NESTE.HE",
+        "info": {"financialCurrency": "EUR", "currency": "USD", "country": "Finland"},
+    }
+
+    assert detect_risk_free_currency(data) == "EUR"
+
+
+def test_detect_risk_free_currency_falls_back_to_ticker_suffix():
+    data = {"ticker": "NESN.SW", "info": {}}
+
+    assert detect_risk_free_currency(data) == "CHF"
+
+
+def test_usd_risk_free_uses_existing_tnx_fetch(monkeypatch):
+    expected = {
+        "rate": 0.04,
+        "date": "2026-01-31",
+        "currency": "USD",
+        "target_currency": "USD",
+        "source": "Yahoo Finance ^TNX",
+    }
+    monkeypatch.setattr(valuation_module, "fetch_risk_free_rate", lambda: expected)
+
+    assert fetch_risk_free_rate_for_currency("USD") == expected
+
+
+def test_non_usd_risk_free_uses_damodaran_currency_table(monkeypatch):
+    def fake_loader(_url):
+        return pd.DataFrame(
+            {
+                "Currency": ["US $", "Euro", "Swiss Franc"],
+                "Riskfree Rate": [4.0, 2.5, 1.0],
+            }
+        )
+
+    monkeypatch.setattr(valuation_module, "_load_currency_risk_free_table", fake_loader)
+
+    result = fetch_risk_free_rate_for_currency("EUR")
+
+    assert result["rate"] == 0.025
+    assert result["currency"] == "EUR"
+    assert result["target_currency"] == "EUR"
+    assert result["source"] == "Damodaran currency risk-free rates"
+    assert result["currency_mismatch"] is False
 
 
 def test_relever_beta():

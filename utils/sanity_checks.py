@@ -42,6 +42,7 @@ INCOMPATIBLE_BUSINESS_MODEL_SECTOR_FRAGMENTS = (
 RUNTIME_EXCEL_SANITY_CATEGORIES = {
     "Business Model Compatibility",
     "Default assumptions",
+    "Risk-free rate currency",
 }
 
 
@@ -59,6 +60,7 @@ def run_sanity_checks(valuation: dict[str, Any]) -> list[dict[str, str]]:
     _check_business_model_compatibility(valuation, warnings)
     _check_default_assumptions(valuation, warnings)
     _check_beta(valuation, warnings)
+    _check_risk_free_currency_match(valuation, warnings)
     _check_costs(valuation, warnings)
     _check_dcf(valuation, warnings)
     _check_tax(valuation, warnings)
@@ -390,8 +392,8 @@ def _check_costs(valuation: dict[str, Any], warnings: list[dict[str, str]]) -> N
     re = valuation.get("cost_of_equity")
     wacc = valuation.get("wacc")
     rd = valuation.get("cost_of_debt")
-    if rf is not None and (rf < 0.005 or rf > 0.15):
-        _add(warnings, "critical", "Risk-free rate is outside the required 0.5%-15% range.")
+    if rf is not None and (rf < -0.01 or rf > 0.15):
+        _add(warnings, "critical", "Risk-free rate is outside the required -1%-15% range.")
     if rf is not None and re is not None and re < rf:
         _add(warnings, "critical", "Cost of equity is below the risk-free rate, which is not economically sensible.")
     if re is not None and re > 0.25:
@@ -402,6 +404,25 @@ def _check_costs(valuation: dict[str, Any], warnings: list[dict[str, str]]) -> N
         _add(warnings, "critical", "Cost of debt is outside the required 1%-15% range.")
     if wacc is not None and re is not None and wacc > re:
         _add(warnings, "critical", "WACC is above cost of equity; check debt cost, weights, and tax shield assumptions.")
+
+
+def _check_risk_free_currency_match(valuation: dict[str, Any], warnings: list[dict[str, str]]) -> None:
+    """Flag cases where the risk-free rate currency had to fall back away from reporting currency."""
+    if not valuation.get("risk_free_currency_mismatch"):
+        return
+    source_currency = valuation.get("risk_free_currency") or "unknown"
+    target_currency = valuation.get("risk_free_target_currency") or valuation.get("currency") or "reported currency"
+    source = valuation.get("risk_free_source") or "fallback source"
+    _add(
+        warnings,
+        "info",
+        (
+            f"Risk-free rate source currency ({source_currency}) does not match reporting currency "
+            f"({target_currency}). {source} was used because a {target_currency} risk-free rate could not be loaded. "
+            "Review WACC before relying on the valuation."
+        ),
+        "Risk-free rate currency",
+    )
 
 
 def _check_dcf(valuation: dict[str, Any], warnings: list[dict[str, str]]) -> None:

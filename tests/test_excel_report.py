@@ -139,6 +139,10 @@ def _build_sample_workbook_bytes_with_statements(
         "yfinance_beta": 1.2,
         "risk_free_rate": 0.04,
         "risk_free_date": "2026-01-31",
+        "risk_free_currency": "EUR",
+        "risk_free_target_currency": "EUR",
+        "risk_free_source": "Damodaran currency risk-free rates",
+        "risk_free_source_detail": "currencyriskfree2026.xls EUR risk-free rate",
         "market_risk_premium": 0.055,
         "cost_of_equity": 0.096925,
         "cost_of_debt": 0.04,
@@ -213,6 +217,7 @@ def test_excel_report_beta_capm_wacc_formula_cells_match_expected_values():
 
     assert capm["B4"].value == "='Beta (Damodaran)'!B11"
     assert capm["B6"].value == "=B3+B4*B5"
+    assert capm["C3"].value == "EUR risk-free rate for EUR valuation; currencyriskfree2026.xls EUR risk-free rate; as of 2026-01-31"
     expected_cost_of_equity = capm["B3"].value + expected_beta * capm["B5"].value
     assert abs(expected_cost_of_equity - 0.096925) < 0.000001
 

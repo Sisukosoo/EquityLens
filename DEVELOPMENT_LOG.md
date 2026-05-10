@@ -318,7 +318,7 @@ Testing across USD, EUR, and CHF tickers confirmed that reported currency labels
 
 The WACC validation layer references the configured Damodaran WACC datasets for the relevant region, including `wacc.xls`, `waccEurope.xls`, and `waccGlobal.xls` as defined in the validation configuration.
 
-One known limitation remains: the risk-free rate currently uses a broad market benchmark rather than a currency-specific government bond curve for every listing currency. A more precise version would use a US Treasury rate for USD companies, a German Bund reference for EUR companies, and a Swiss government bond reference for CHF companies.
+The CAPM risk-free rate is now selected by reporting currency. USD companies use Yahoo Finance `^TNX`, while non-USD companies use Damodaran's currency risk-free dataset when the relevant currency is available. If a currency-specific rate cannot be loaded, the app falls back to USD `^TNX` with an explicit warning.
 
 ## Tested Companies and Outcomes
 

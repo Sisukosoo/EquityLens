@@ -526,14 +526,18 @@ def _build_capm_sheet(sheet, valuation: dict[str, Any]) -> None:
     Build the CAPM worksheet.
 
     Formula: Re = Rf + beta x ERP.
-    Source: yfinance ^TNX for Rf and Damodaran recommended 5.5% ERP.
+    Source: currency-specific Rf metadata from valuation result and Damodaran recommended 5.5% ERP.
     Example: B5 formula equals B2+B3*B4.
     Required inputs: valuation dict.
     Limitation: ERP is fixed at 5.5% per prompt.
     """
     _title(sheet, "CAPM")
+    rf_currency = valuation.get("risk_free_currency") or "USD"
+    rf_target = valuation.get("risk_free_target_currency") or valuation.get("currency") or rf_currency
+    rf_source = valuation.get("risk_free_source_detail") or valuation.get("risk_free_source") or "Risk-free rate source"
+    rf_note = f"{rf_currency} risk-free rate for {rf_target} valuation; {rf_source}; as of {valuation.get('risk_free_date')}"
     rows = [
-        ("Risk-free rate", valuation.get("risk_free_rate"), f"^TNX as of {valuation.get('risk_free_date')}"),
+        ("Risk-free rate", valuation.get("risk_free_rate"), rf_note),
         ("Levered Beta", "='Beta (Damodaran)'!B11", "Damodaran industry beta re-levered to company D/E"),
         ("Market Risk Premium", valuation.get("market_risk_premium"), "Damodaran recommendation: 5.5%"),
         ("Cost of Equity", "=B3+B4*B5", "CAPM formula"),

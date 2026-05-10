@@ -39,6 +39,46 @@ MULTIPLE_PB_URLS = {
     "europe": "https://pages.stern.nyu.edu/~adamodar/pc/datasets/pbvEurope.xls",
     "us": "https://pages.stern.nyu.edu/~adamodar/pc/datasets/pbvdata.xls",
 }
+RISK_FREE_CURRENCY_URL = "https://pages.stern.nyu.edu/~adamodar/pc/datasets/currencyriskfree2026.xls"
+USD_RISK_FREE_SOURCE = "Yahoo Finance ^TNX"
+DAMODARAN_RISK_FREE_SOURCE = "Damodaran currency risk-free rates"
+TICKER_SUFFIX_CURRENCY_MAP = {
+    ".HE": "EUR",
+    ".DE": "EUR",
+    ".PA": "EUR",
+    ".AS": "EUR",
+    ".MI": "EUR",
+    ".SW": "CHF",
+    ".L": "GBP",
+    ".ST": "SEK",
+    ".OL": "NOK",
+    ".CO": "DKK",
+    ".T": "JPY",
+}
+COUNTRY_CURRENCY_MAP = {
+    "united states": "USD",
+    "finland": "EUR",
+    "germany": "EUR",
+    "france": "EUR",
+    "italy": "EUR",
+    "netherlands": "EUR",
+    "switzerland": "CHF",
+    "united kingdom": "GBP",
+    "sweden": "SEK",
+    "norway": "NOK",
+    "denmark": "DKK",
+    "japan": "JPY",
+}
+CURRENCY_LOOKUP_ALIASES = {
+    "USD": ("USD", "US", "US Dollar", "United States Dollar", "Dollar"),
+    "EUR": ("EUR", "Euro", "Euros"),
+    "CHF": ("CHF", "Swiss Franc", "Swiss Francs"),
+    "GBP": ("GBP", "British Pound", "Pound Sterling", "Sterling"),
+    "SEK": ("SEK", "Swedish Krona"),
+    "NOK": ("NOK", "Norwegian Krone"),
+    "DKK": ("DKK", "Danish Krone"),
+    "JPY": ("JPY", "Japanese Yen", "Yen"),
+}
 
 
 @dataclass
@@ -277,7 +317,193 @@ def fetch_risk_free_rate() -> dict[str, Any]:
         "rate": rate,
         "date": latest.name.strftime("%Y-%m-%d") if hasattr(latest.name, "strftime") else str(latest.name),
         "raw_close": close,
+        "currency": "USD",
+        "target_currency": "USD",
+        "source": USD_RISK_FREE_SOURCE,
+        "source_detail": "^TNX latest close over the last 7 trading days",
+        "source_ticker": "^TNX",
+        "currency_mismatch": False,
     }
+
+
+def detect_risk_free_currency(data: dict[str, Any]) -> str:
+    """
+    Determine the currency that should drive the risk-free rate.
+
+    Formula: prefer reporting currency, then market currency, then ticker/country fallback.
+    Source: yfinance info fields and exchange suffix conventions.
+    Example: NESN.SW -> CHF when financialCurrency is unavailable.
+    Required inputs: fetched company data.
+    Limitation: multi-currency reporters can still require analyst review.
+    """
+    info = data.get("info", {}) if isinstance(data, dict) else {}
+    for key in ("financialCurrency", "currency"):
+        value = info.get(key)
+        if value:
+            return str(value).strip().upper()
+    ticker = str(data.get("ticker", "") if isinstance(data, dict) else "").upper().strip()
+    for suffix, currency in TICKER_SUFFIX_CURRENCY_MAP.items():
+        if ticker.endswith(suffix):
+            return currency
+    country = str(info.get("country") or "").strip().lower()
+    return COUNTRY_CURRENCY_MAP.get(country, "USD")
+
+
+def fetch_risk_free_rate_for_currency(currency: str) -> dict[str, Any]:
+    """
+    Fetch a risk-free rate aligned with the valuation currency.
+
+    Formula: USD uses ^TNX; non-USD uses Damodaran currency risk-free rate by currency.
+    Source: Yahoo Finance for USD and Damodaran currencyriskfree2026.xls for non-USD.
+    Example: EUR -> Damodaran EUR risk-free rate.
+    Required inputs: ISO-like currency code.
+    Limitation: Damodaran currency table is updated periodically, not intraday.
+    """
+    normalized = str(currency or "USD").strip().upper()
+    if normalized == "USD":
+        return fetch_risk_free_rate()
+    return fetch_damodaran_currency_risk_free_rate(normalized)
+
+
+def fetch_damodaran_currency_risk_free_rate(currency: str) -> dict[str, Any]:
+    """
+    Fetch a non-USD risk-free rate from Damodaran's currency risk-free table.
+
+    Formula: lookup risk-free rate by currency code and convert percent-like values to decimals.
+    Source: Damodaran currencyriskfree2026.xls.
+    Example: CHF row risk-free rate -> CAPM Rf for CHF reporters.
+    Required inputs: currency code.
+    Limitation: workbook header labels can change; parser uses loose column matching.
+    """
+    normalized = str(currency or "").strip().upper()
+    if not normalized:
+        raise ValueError("Currency is required for Damodaran risk-free lookup.")
+    frame = _load_currency_risk_free_table(RISK_FREE_CURRENCY_URL)
+    currency_col = _find_risk_free_currency_column(frame)
+    rate_col = _find_risk_free_rate_column(frame)
+    if currency_col is None or rate_col is None:
+        raise ValueError(
+            "Damodaran currency risk-free table did not expose required currency/risk-free columns."
+        )
+    aliases = {_normalized_label(alias) for alias in CURRENCY_LOOKUP_ALIASES.get(normalized, (normalized,))}
+    matches = frame[frame[currency_col].map(lambda item: _normalized_label(item) in aliases)]
+    if matches.empty:
+        raise ValueError(f"Risk-free rate for {normalized} was not found in Damodaran currency table.")
+    value = _risk_free_rate_to_decimal(matches.iloc[0].get(rate_col))
+    if value is None:
+        raise ValueError(f"Risk-free rate for {normalized} is not numeric in Damodaran currency table.")
+    if value < -0.01 or value > 0.15:
+        log_event(
+            f"Currency risk-free rate sanity warning: currency={normalized}, parsed_rate={value}",
+            "valuation_warning",
+        )
+        raise ValueError(f"Risk-free rate outside -1%-15% sanity range for {normalized}: {value}")
+    return {
+        "rate": value,
+        "date": "January 2026",
+        "raw_close": matches.iloc[0].get(rate_col),
+        "currency": normalized,
+        "target_currency": normalized,
+        "source": DAMODARAN_RISK_FREE_SOURCE,
+        "source_detail": f"{_source_filename(RISK_FREE_CURRENCY_URL)} {normalized} risk-free rate",
+        "source_url": RISK_FREE_CURRENCY_URL,
+        "currency_mismatch": False,
+    }
+
+
+def _load_currency_risk_free_table(url: str) -> pd.DataFrame:
+    """Load Damodaran's currency risk-free table with a currency-specific header heuristic."""
+    try:
+        workbook = pd.read_excel(url, sheet_name=None, header=None)
+    except Exception as exc:
+        log_event(f"Damodaran currency risk-free URL failed: {url} | {exc}", "damodaran_error")
+        raise RuntimeError(f"Could not load Damodaran currency risk-free dataset: {url}") from exc
+    best_raw = None
+    best_header = 0
+    best_score = -1
+    for raw in workbook.values():
+        for idx, row in raw.head(30).iterrows():
+            values = [str(value).strip().lower() for value in row.dropna().tolist()]
+            text = " ".join(values)
+            score = 0
+            if "currency" in text:
+                score += 20
+            if "risk" in text and "free" in text:
+                score += 20
+            if "rate" in text:
+                score += 5
+            if score > best_score:
+                best_score = score
+                best_header = int(idx)
+                best_raw = raw
+    if best_raw is None or best_score < 20:
+        raise RuntimeError("No readable currency risk-free table header was found.")
+    headers = _make_unique_labels(best_raw.iloc[best_header].tolist())
+    frame = best_raw.iloc[best_header + 1 :].copy()
+    frame.columns = headers
+    frame = frame.dropna(how="all").reset_index(drop=True)
+    frame.columns = [str(column).strip() for column in frame.columns]
+    return frame
+
+
+def _make_unique_labels(values: list[Any]) -> list[str]:
+    """Build unique DataFrame labels from a raw header row."""
+    labels = []
+    counts: dict[str, int] = {}
+    for index, value in enumerate(values):
+        base = f"unnamed_{index + 1}" if pd.isna(value) or str(value).strip() == "" else str(value).strip()
+        count = counts.get(base, 0)
+        counts[base] = count + 1
+        labels.append(base if count == 0 else f"{base}_{count + 1}")
+    return labels
+
+
+def _find_risk_free_currency_column(frame: pd.DataFrame) -> str | None:
+    """Find the currency-code column in Damodaran's currency risk-free workbook."""
+    for column in frame.columns:
+        key = _normalized_label(column)
+        if key in {"currency", "currencycode"} or "currency" in key:
+            return str(column)
+    return None
+
+
+def _find_risk_free_rate_column(frame: pd.DataFrame) -> str | None:
+    """Find the risk-free-rate column, preferring explicit risk-free labels over bond rates."""
+    scored: list[tuple[int, str]] = []
+    for column in frame.columns:
+        key = _normalized_label(column)
+        if "riskfree" not in key and not ("risk" in key and "free" in key):
+            continue
+        score = 100
+        if "rate" in key:
+            score += 20
+        if "government" in key or "bond" in key:
+            score -= 40
+        scored.append((score, str(column)))
+    if not scored:
+        return None
+    scored.sort(reverse=True, key=lambda item: item[0])
+    return scored[0][1]
+
+
+def _risk_free_rate_to_decimal(value: Any) -> float | None:
+    """Convert risk-free-rate values such as 2.5, 0.025, or -0.2 into decimals."""
+    number = _value_or_none(value)
+    if number is None:
+        return None
+    if abs(number) > 0.15:
+        return number / 100
+    return number
+
+
+def _normalized_label(value: Any) -> str:
+    """Normalize labels for loose column matching."""
+    return "".join(ch for ch in str(value).lower() if ch.isalnum())
+
+
+def _source_filename(url: str) -> str:
+    """Return the filename portion of a source URL."""
+    return str(url).rsplit("/", 1)[-1]
 
 
 def build_valuation_result(
@@ -440,6 +666,13 @@ def build_valuation_result(
         "working_capital_source": selected_assumptions.get("working_capital_source", working_capital_source),
         "risk_free_rate": rf,
         "risk_free_date": risk_free.get("date"),
+        "risk_free_currency": risk_free.get("currency", "USD"),
+        "risk_free_target_currency": risk_free.get("target_currency", currency),
+        "risk_free_source": risk_free.get("source", USD_RISK_FREE_SOURCE),
+        "risk_free_source_detail": risk_free.get("source_detail", ""),
+        "risk_free_source_url": risk_free.get("source_url"),
+        "risk_free_currency_mismatch": bool(risk_free.get("currency_mismatch")),
+        "risk_free_warning": risk_free.get("warning"),
         "market_risk_premium": MARKET_RISK_PREMIUM,
         "unlevered_beta": unlevered_beta,
         "levered_beta": levered_beta,

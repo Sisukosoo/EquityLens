@@ -10,6 +10,7 @@ from utils.sanity_checks import (
     _check_ebit_margin_outlier,
     _check_effective_tax_context,
     _check_implied_price_vs_market,
+    _check_risk_free_currency_match,
     _check_tier_price_gap,
     build_excel_sanity_checks,
     run_sanity_checks,
@@ -178,6 +179,47 @@ def test_default_assumption_check_lists_tier1_missing_data_defaults():
     assert rows[0]["category"] == "Default assumptions"
     assert "CapEx (Default 4%" in rows[0]["message"]
     assert "working capital (Default 2%" in rows[0]["message"]
+
+
+def test_risk_free_currency_mismatch_check_flags_usd_fallback():
+    rows = []
+    valuation = {
+        "currency": "CHF",
+        "risk_free_currency": "USD",
+        "risk_free_target_currency": "CHF",
+        "risk_free_source": "Yahoo Finance ^TNX fallback",
+        "risk_free_currency_mismatch": True,
+    }
+
+    _check_risk_free_currency_match(valuation, rows)
+
+    assert rows == [
+        {
+            "severity": "info",
+            "category": "Risk-free rate currency",
+            "message": (
+                "Risk-free rate source currency (USD) does not match reporting currency (CHF). "
+                "Yahoo Finance ^TNX fallback was used because a CHF risk-free rate could not be loaded. "
+                "Review WACC before relying on the valuation."
+            ),
+        }
+    ]
+
+
+def test_risk_free_currency_mismatch_check_does_not_flag_matching_currency():
+    rows = []
+
+    _check_risk_free_currency_match(
+        {
+            "currency": "EUR",
+            "risk_free_currency": "EUR",
+            "risk_free_target_currency": "EUR",
+            "risk_free_currency_mismatch": False,
+        },
+        rows,
+    )
+
+    assert rows == []
 
 
 def test_runtime_sanity_checks_for_excel_keeps_business_model_warning_first():

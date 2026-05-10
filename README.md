@@ -2,6 +2,8 @@
 
 A Streamlit app that pulls company financials from yfinance and produces a DCF valuation. The output is an interactive dashboard plus a downloadable Excel report with seven tabs: Summary, Beta, CAPM, WACC, DCF, Validation, and Raw Data.
 
+> **AI-assisted development note.** This project was built with modern AI coding tools, especially Codex by OpenAI and Claude Code by Anthropic. I am not personally able to code a system of this complexity from scratch without assistance. The purpose of this project is to use these tools deliberately as part of my learning process: to build, test, question, debug, and understand a finance model more deeply than I could through theory alone.
+>
 > **Why this exists.** This is not meant to be a finished product. It is a learning journey where I built a data-driven valuation model and at the same time tried to connect it to the main theories in corporate finance: CAPM, WACC, DCF, sector benchmarking, and multiples. I wanted to understand markets and numbers more deeply than I did before.
 >
 > The model itself is deliberately conservative. It uses historical CAGR for revenue growth, the latest reported EBIT margin, and Gordon growth terminal value. I think of it as a "downside-anchored" framework. Instead of asking *what is the price target*, it asks *what does the historical financial trajectory justify?* The reverse DCF then complements this. It quantifies what growth assumption the current market price implies, which makes the gap between numbers and narrative visible.
@@ -13,7 +15,7 @@ A Streamlit app that pulls company financials from yfinance and produces a DCF v
 - Pulls company financials, share price, beta, and Yahoo revenue growth estimate data from Yahoo Finance via yfinance.
 - Matches the company to a Damodaran (NYU Stern) industry sector. From there it pulls sector benchmarks for beta, cost of debt, EBIT margin, CapEx, and EV/EBITDA, EV/Sales, P/Book multiples.
 - Re-levers the Damodaran industry beta to the company's capital structure.
-- Builds CAPM cost of equity and WACC from company financials. Sector fallbacks fill in where company data is missing.
+- Builds CAPM cost of equity and WACC from company financials. The risk-free rate is matched to the company's reporting currency where available. Sector fallbacks fill in where company data is missing.
 - Runs a 5-tier valuation cascade: Standard DCF, Smoothed DCF, Sector Benchmark DCF, Multiples, Tangible Book Floor. The first tier that produces a positive implied price within 70% of market is selected.
 - Solves a reverse DCF. Given Tier 1 inputs, what year-1-to-5 revenue growth would make the implied price equal the current market price?
 - Runs two parallel sanity-check pipelines. One gates Excel report generation when critical warnings fire. The other is informational only and writes to Excel.
@@ -47,7 +49,7 @@ Type a ticker in the sidebar (for example `JNJ`, `KNEBV.HE`, or `NESN.SW`), clic
 
 ## Test results across 12 tickers
 
-I tested the model across mature, growth, cyclical, transition, and out-of-scope business types. All results below are from a single run on 2026-05-09 against the same Damodaran data vintage (January 2026).
+I tested the model across mature, growth, cyclical, transition, and out-of-scope business types. All results below are from a single run on 2026-05-10 against the same Damodaran data vintage (January 2026).
 
 ### Valuation output
 
@@ -56,12 +58,12 @@ I tested the model across mature, growth, cyclical, transition, and out-of-scope
 | 1 | JNJ | Johnson & Johnson | 221.32 | 204.85 | -7.4% | 1 | NORMAL |
 | 2 | KO | Coca-Cola | 78.42 | 61.90 | -21.1% | 1 | NORMAL |
 | 3 | XOM | Exxon Mobil | 144.57 | 113.74 | -21.3% | 1 | NORMAL |
-| 4 | KNEBV.HE | KONE | 51.14 | 28.74 | -43.8% | 1 | NORMAL |
+| 4 | KNEBV.HE | KONE | 51.14 | 34.47 | -32.6% | 1 | NORMAL |
 | 5 | PG | Procter & Gamble | 146.42 | 99.58 | -32.0% | 1 | NORMAL |
 | 6 | GOOGL | Alphabet | 400.80 | 180.24 | -55.0% | 1 | NORMAL |
 | 7 | MSFT | Microsoft | 415.12 | 166.06 | -60.0% | 1 | NORMAL |
 | 8 | AAPL | Apple | 293.32 | 98.74 | -66.3% | 1 | NORMAL |
-| 9 | NESN.SW | Nestle | 77.47 | 25.66 | -66.9% | 1 | NORMAL |
+| 9 | NESN.SW | Nestle | 77.47 | 91.42 | +18.0% | 1 | NORMAL |
 | 10 | UNH | UnitedHealth | 379.98 | 429.58 | +13.1% | 1 | NORMAL |
 | 11 | NESTE.HE | Neste | 27.35 | 13.04 | -52.3% | 4 | LOW |
 | 12 | BAC | Bank of America | 51.31 | 86.26 | +68.1% | 1 (flagged) | CRITICAL |
@@ -73,21 +75,21 @@ I tested the model across mature, growth, cyclical, transition, and out-of-scope
 | 1 | JNJ | 7.4% | 5.6% | 9.9% | Drugs (Pharmaceutical) |
 | 2 | KO | 8.9% | 3.7% | 12.1% | Beverage (Soft) |
 | 3 | XOM | -1.0% | -6.7% | 2.6% | Oil/Gas (Integrated) |
-| 4 | KNEBV.HE | 16.8% | 1.0% | 1.3% | Machinery |
+| 4 | KNEBV.HE | 11.4% | 1.0% | 1.3% | Machinery |
 | 5 | PG | 8.9% | 1.7% | 7.4% | Household Products |
 | 6 | GOOGL | 43.5% | 12.5% | 21.8% | Software (Internet) |
 | 7 | MSFT | 42.8% | 12.4% | 18.3% | Software (System & App) |
 | 8 | AAPL | 28.1% | 1.8% | 16.6% | Electronics (C&O) |
-| 9 | NESN.SW | 12.6% | -1.8% | -2.2% | Food Processing |
+| 9 | NESN.SW | -4.0% | -1.8% | -2.2% | Food Processing |
 | 10 | UNH | 9.3% | 11.4% | 2.0% | Healthcare Products |
 | 11 | NESTE.HE | n/a (failed) | -9.6% | 2.9% | Green & Renewable Energy |
 | 12 | BAC | -3.1% | 6.0% | 8.1% | Bank (Money Center) |
 
 ### What the table shows
 
-**9 of 10 mature companies trade above conservative DCF.** This is by design. With historical CAGR, latest-FY margins, and Gordon growth terminal, the model anchors on what already happened. Quality, brand, AI optionality, and other forward-looking factors are not in the inputs.
+**8 of 10 DCF-applicable operating companies trade above conservative DCF.** This is by design. With historical CAGR, latest-FY margins, and Gordon growth terminal, the model anchors on what already happened. Quality, brand, AI optionality, and other forward-looking factors are not in the inputs.
 
-**UnitedHealth (#10)** is the one positive-upside case among DCF-applicable tickers. Market price has compressed below historical fundamentals, and Tier 1 still works because the inputs are within normal ranges.
+**UnitedHealth (#10) and Nestle (#9)** are the positive-upside cases among DCF-applicable tickers. UnitedHealth's market price has compressed below historical fundamentals, and Tier 1 still works because the inputs are within normal ranges. Nestle moved above market after the currency-specific risk-free rate fix. A CHF-denominated company should not be discounted with a US Treasury rate, and the lower CHF risk-free rate now flows through WACC correctly.
 
 **Big tech (GOOGL, MSFT, AAPL)** show the largest gaps. Reverse DCF is what makes those gaps actually informative. MSFT, for example, needs **42.8% revenue CAGR** to justify $415, while the historical CAGR is 12.4% and the Yahoo revenue growth estimate is 18.3%. The model cannot generate that growth from its inputs, and that is the point. The gap is what the user is supposed to think about.
 
@@ -172,7 +174,7 @@ This was tested with Bank of America (case 12 above). The gating activates, the 
 
 This is a study project, not a production valuation tool. Below are the limitations I am aware of. I have decided not to fix them in this version. Some are deliberate design choices. Others would need structural changes that go beyond the scope of a learning project.
 
-**1. Conservative terminal value framework.** Terminal value uses Gordon growth only, calculated as `FCF x (1 + g) / (WACC - g)`. There is no exit-multiple comparison. Combined with historical CAGR and latest-FY margins, this systematically anchors the model below market price for quality compounders like KO, PG, NESN, and the big tech names. A production-grade DCF would compute both Gordon growth and an exit-multiple terminal value, and present a range. I went with the conservative path on purpose. It keeps the model interpretable as a single anchor and makes the reverse DCF gap meaningful.
+**1. Conservative terminal value framework.** Terminal value uses Gordon growth only, calculated as `FCF x (1 + g) / (WACC - g)`. There is no exit-multiple comparison. Combined with historical CAGR and latest-FY margins, this systematically anchors the model below market price for quality compounders like KO, PG, and the big tech names. A production-grade DCF would compute both Gordon growth and an exit-multiple terminal value, and present a range. I went with the conservative path on purpose. It keeps the model interpretable as a single anchor and makes the reverse DCF gap meaningful.
 
 **2. Historical CAGR cannot capture transition stories.** AI momentum, platform shifts, brand pricing power, regulatory change, and management quality are not historical line items. The big tech reverse DCF results (MSFT 42.8%, GOOGL 43.5%, AAPL 28.1%) quantify how much of the current market price is non-fundamental expectation. The model's job is to measure that gap, not to close it.
 
@@ -190,8 +192,8 @@ These are all listed as `known_limitations`, not `bugs`. They reflect deliberate
 
 ## Data sources and acknowledgments
 
-- **Yahoo Finance via yfinance** for company financials, share prices, betas, and revenue growth estimate data.
-- **Aswath Damodaran (NYU Stern)** for industry datasets covering betas, WACC, EBIT margins, CapEx ratios, and valuation multiples. The model picks the regional dataset matching the company's listing (US, Europe, Emerging Markets, or Global).
+- **Yahoo Finance via yfinance** for company financials, share prices, betas, USD Treasury yield data, and revenue growth estimate data.
+- **Aswath Damodaran (NYU Stern)** for industry datasets covering currency-specific risk-free rates, betas, WACC, EBIT margins, CapEx ratios, and valuation multiples. The model picks the regional dataset matching the company's listing (US, Europe, Emerging Markets, or Global).
 - **scipy** for the reverse DCF solver (`brentq`).
 - **rapidfuzz** for sector matching.
 

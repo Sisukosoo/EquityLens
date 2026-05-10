@@ -54,9 +54,12 @@ from utils.valuation import (
     MULTIPLE_EV_EBITDA_URLS,
     MULTIPLE_EV_SALES_URLS,
     MULTIPLE_PB_URLS,
+    RISK_FREE_CURRENCY_URL,
     STANDARD_DCF_MAX_DEVIATION,
     build_valuation_result,
+    detect_risk_free_currency,
     fetch_risk_free_rate,
+    fetch_risk_free_rate_for_currency,
 )
 from utils.reporting import build_pdf_report
 from utils.visualizations import (
@@ -1019,18 +1022,44 @@ def run_pytest_before_excel() -> tuple[bool, str]:
     return result.returncode == 0, output[-3000:]
 
 
-def fetch_risk_free_with_fallback() -> tuple[dict | None, str | None]:
-    """Fetch ^TNX risk-free rate, using session cached value if live fetch fails."""
+def fetch_risk_free_with_fallback(data: dict) -> tuple[dict | None, str | None]:
+    """Fetch a currency-aligned risk-free rate, using cache or USD fallback when needed."""
+    target_currency = detect_risk_free_currency(data)
+    cache_key = f"last_risk_free_{target_currency}"
     try:
-        risk_free = fetch_risk_free_rate()
-        st.session_state["last_risk_free"] = risk_free
+        risk_free = fetch_risk_free_rate_for_currency(target_currency)
+        st.session_state[cache_key] = risk_free
         return risk_free, None
     except Exception as exc:
         if "Risk-free rate outside" in str(exc):
             return None, str(exc)
-        cached = st.session_state.get("last_risk_free")
+        cached = st.session_state.get(cache_key)
         if cached:
-            return cached, f"Risk-free rate live fetch failed; using cached ^TNX value from {cached.get('date')}."
+            return cached, (
+                f"{target_currency} risk-free rate live fetch failed; using cached "
+                f"{cached.get('currency', target_currency)} value from {cached.get('date')}."
+            )
+        if target_currency != "USD":
+            try:
+                fallback = fetch_risk_free_rate()
+            except Exception as fallback_exc:
+                return None, (
+                    f"{target_currency} risk-free rate could not be loaded and USD fallback also failed: "
+                    f"{exc}; USD fallback error: {fallback_exc}"
+                )
+            warning = (
+                f"{target_currency} risk-free rate could not be loaded; using USD ^TNX fallback. "
+                "Risk-free rate currency does not match reporting currency."
+            )
+            fallback = {
+                **fallback,
+                "target_currency": target_currency,
+                "currency_mismatch": True,
+                "warning": warning,
+                "source": "Yahoo Finance ^TNX fallback",
+                "source_detail": f"USD ^TNX fallback used because {target_currency} rate failed to load",
+            }
+            return fallback, warning
         return None, f"Risk-free rate could not be loaded and no cached value exists: {exc}"
 
 
@@ -1293,7 +1322,7 @@ def render_valuation_sidebar(
     progress.progress(20)
 
     status.info("Loading risk-free rate...")
-    risk_free, rf_warning = fetch_risk_free_with_fallback()
+    risk_free, rf_warning = fetch_risk_free_with_fallback(data)
     if rf_warning:
         st.warning(rf_warning)
     if risk_free is None:
@@ -2007,7 +2036,7 @@ def methodology_capm_rows() -> list[dict[str, str]]:
     """Return CAPM methodology rows based on valuation.py sources."""
     return [
         {"Component": "CAPM formula", "Formula / source": f"Cost of equity = risk-free rate + levered beta x market risk premium. MARKET_RISK_PREMIUM = {MARKET_RISK_PREMIUM:.1%}."},
-        {"Component": "Risk-free rate", "Formula / source": "Yahoo Finance ^TNX latest close over the last 7 days; close is divided by 100 when the quote is above 1. Sanity range is 0.5%-15%."},
+        {"Component": "Risk-free rate", "Formula / source": "Selected by reporting currency. USD companies use Yahoo Finance ^TNX latest close; non-USD companies use Damodaran currencyriskfree2026.xls matched to the reporting currency. If a currency-specific rate cannot be loaded, USD ^TNX is used as an explicit fallback. Sanity range is -1%-15%."},
         {"Component": "Beta source", "Formula / source": "Damodaran industry unlevered beta from the matched beta workbook, re-levered with beta_L = beta_U x (1 + (1 - tax rate) x D/E)."},
         {"Component": "Equity risk premium", "Formula / source": f"Fixed source-code constant MARKET_RISK_PREMIUM = {MARKET_RISK_PREMIUM:.1%}."},
     ]
@@ -2052,7 +2081,8 @@ def methodology_sanity_check_rows() -> list[dict[str, str]]:
         {"Pipeline": "run_sanity_checks()", "Code check": "_check_business_model_compatibility", "Displayed category / message": "Business Model Compatibility"},
         {"Pipeline": "run_sanity_checks()", "Code check": "_check_default_assumptions", "Displayed category / message": "Default assumptions"},
         {"Pipeline": "run_sanity_checks()", "Code check": "_check_beta", "Displayed category / message": "Levered beta is outside the usual 0-3 range; D/E ratio is above 5.0"},
-        {"Pipeline": "run_sanity_checks()", "Code check": "_check_costs", "Displayed category / message": "Risk-free rate outside 0.5%-15%; cost of equity below risk-free rate; cost of equity above 25%; WACC outside 3%-20%; cost of debt outside 1%-15%; WACC above cost of equity"},
+        {"Pipeline": "run_sanity_checks()", "Code check": "_check_risk_free_currency_match", "Displayed category / message": "Risk-free rate fallback currency differs from reporting currency"},
+        {"Pipeline": "run_sanity_checks()", "Code check": "_check_costs", "Displayed category / message": "Risk-free rate outside -1%-15%; cost of equity below risk-free rate; cost of equity above 25%; WACC outside 3%-20%; cost of debt outside 1%-15%; WACC above cost of equity"},
         {"Pipeline": "run_sanity_checks()", "Code check": "_check_dcf", "Displayed category / message": "Terminal growth >= WACC; terminal growth above 4%; implied price vs market sanity messages"},
         {"Pipeline": "run_sanity_checks()", "Code check": "_check_tax", "Displayed category / message": "Tax rate is outside the 0%-40% range"},
         {"Pipeline": "Excel-only analyst checks (build_excel_sanity_checks)", "Code check": "_check_ebit_margin_outlier", "Displayed category / message": "Margin volatility"},
@@ -2073,6 +2103,7 @@ def damodaran_dataset_rows() -> list[dict[str, str]]:
     """Return all Damodaran workbook URLs used by the application."""
     rows: list[dict[str, str]] = []
     dataset_groups = [
+        ("Currency-specific risk-free rate", {"global": RISK_FREE_CURRENCY_URL}),
         ("Industry beta / D/E / tax / cost of debt", BETA_URLS),
         ("WACC validation and cost of debt fallback", WACC_URLS),
         ("Tier 3 EBIT margin benchmark", DCF_MARGIN_URLS),
