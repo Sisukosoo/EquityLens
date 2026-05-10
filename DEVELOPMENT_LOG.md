@@ -16,6 +16,10 @@ The five-tier valuation cascade is the core architectural choice:
 
 Each tier exists to handle a different kind of company. Tiers 1-3 attempt DCF with progressively broader assumptions, Tier 4 falls back to market multiples when DCF cannot produce a sane result, and Tier 5 provides a conservative balance-sheet floor.
 
+## Tooling Note
+
+This project was built using AI coding tools, especially Codex by OpenAI and Claude Code by Anthropic. I used them deliberately as part of a learning-by-doing process, not as a way to ship code without understanding it. The architecture decisions, methodology choices, scope decisions, and review of each change were mine, while the AI tools wrote most of the actual Python implementation. I also pushed back when suggestions were wrong, caught regressed numbers, and reviewed every code change before keeping it.
+
 ## Earlier Build History
 
 This section records the earlier foundation work that happened before the later valuation-specific refinements documented below. Some early assumptions and thresholds were later changed as the model matured, so this section should be read as development history rather than a complete description of the current implementation.
@@ -183,7 +187,7 @@ These early lessons became the basis for the later reverse DCF, analyst checks, 
 
 ### Phase 1 - Diagnosing the Growth Company Problem
 
-Initial test results showed Apple at roughly -65% versus market and Microsoft at roughly -51% versus market under Tier 1 Standard DCF. The reflexive interpretation was that the market was overpricing tech. After investigation, that interpretation was too simplistic. The deviations were largely structural, caused by Apple revenue volatility distorting the historical CAGR and by using the latest FY EBIT margin as the steady-state margin assumption for companies where the market is pricing forward growth.
+Initial test results showed Apple at roughly -65% versus market and Microsoft at roughly -51% versus market under Tier 1 Standard DCF. These figures reflect the model state at that early phase of development. Later changes, including the currency-specific risk-free rate fix described in Phase 9, shifted some of these numbers. The reverse DCF capability described below was the original response to this diagnosis, not the currency fix. The reflexive interpretation was that the market was overpricing tech. After investigation, that interpretation was too simplistic. The deviations were largely structural, caused by Apple revenue volatility distorting the historical CAGR and by using the latest FY EBIT margin as the steady-state margin assumption for companies where the market is pricing forward growth.
 
 Rather than calibrating the model to produce more flattering numbers, I added a **reverse DCF** capability. The reverse DCF holds all Tier 1 DCF inputs constant except revenue growth, then solves for the growth rate that would make the implied price equal the current market price. This turned the model from a calculator that says "the value is X" into a diagnostic tool that explains the gap between market expectations and historical performance.
 
@@ -268,6 +272,20 @@ The fix was a critical-severity business model compatibility check. It fires for
 
 When this check fires, Streamlit gates Excel report generation until the user explicitly overrides the warning. The Excel Summary tab also displays a critical banner and changes confidence wording so that a workbook reader does not miss the warning.
 
+### Phase 9 - Currency-Specific Risk-Free Rate
+
+The CAPM risk-free rate originally used Yahoo Finance `^TNX`, the US 10-year Treasury yield, for every ticker regardless of reporting currency. This was methodologically wrong for non-USD companies. Euro-area, Swiss, and other non-USD names were being discounted with a US Treasury rate that did not match their reporting currency.
+
+The effect was systematic. Non-USD companies could receive inflated WACC values, which depressed their implied DCF prices. This was especially visible for Swiss and euro-area tickers, where the correct local-currency risk-free rate can be materially lower than the US Treasury yield.
+
+The fix routes the risk-free rate through the company's reporting currency. USD companies still use Yahoo Finance `^TNX`. Non-USD companies use Damodaran's currency risk-free rate dataset, `currencyriskfree2026.xls`, when the relevant currency is available. If the currency-specific rate cannot be loaded, the app falls back to USD `^TNX` with an explicit warning.
+
+This was intentionally scoped as a risk-free-rate fix only. Sector matching, business model gating, tier selection logic, and DCF math were not changed. Regression checks confirmed that USD tickers produced numerically identical results to the previous version, which helped prove that the fix did not accidentally change unrelated logic.
+
+The non-USD results changed where they should have changed. KNEBV.HE moved from -43.8% to -32.6%. NESN.SW moved from -66.9% to +18.0%, with reverse DCF implied growth moving from +12.6% to -4.0%. NESTE.HE remained at Tier 4 multiples valuation, which confirmed that the fallback was driven by the margin trough rather than by WACC alone.
+
+A more complete version of this improvement would also use country-specific equity risk premiums instead of the global `MARKET_RISK_PREMIUM` of 5.5%. I deliberately did not make that change in this phase. Keeping the scope limited made the regression behavior cleanly attributable to the risk-free rate alone. Country-specific ERP remains a future improvement.
+
 ## Methodological Learnings
 
 ### What Works Well
@@ -332,7 +350,7 @@ The CAPM risk-free rate is now selected by reporting currency. USD companies use
 | GOOGL | Big tech | Tier 1 | Large reverse DCF gap; market prices growth optionality |
 | MSFT | Big tech | Tier 1 | Large reverse DCF gap; AI premium visible |
 | AAPL | Big tech with outlier year | Tier 1 | Outlier year plus premium valuation |
-| NESN.SW | Consumer staples in slowdown | Tier 1 | Deeper slowdown case than PG |
+| NESN.SW | Consumer staples, CHF reporting currency | Tier 1 | Positive Tier 1 after currency-specific risk-free rate fix; CHF discounting now correct |
 | NESTE.HE | Cyclical plus transformation | Tier 4 | Multiples fallback after DCF tiers fail |
 | BAC | Bank / financial institution | Tier 1, flagged | Critical warning: operating-company DCF not applicable |
 
