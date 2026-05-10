@@ -13,7 +13,7 @@ A Streamlit app that pulls company financials from yfinance and produces a DCF v
 ## What it does
 
 - Pulls company financials, share price, beta, and Yahoo revenue growth estimate data from Yahoo Finance via yfinance.
-- Lets the user compare two tickers side by side with a normalized peer radar chart, fiscal-year metrics, and TTM market multiples.
+- Provides a side-by-side peer comparison view (radar chart, FY metrics table, TTM market multiples) for sanity-checking the valuation against a comparable company.
 - Matches the company to a Damodaran (NYU Stern) industry sector. From there it pulls sector benchmarks for beta, cost of debt, EBIT margin, CapEx, and EV/EBITDA, EV/Sales, P/Book multiples.
 - Re-levers the Damodaran industry beta to the company's capital structure.
 - Builds CAPM cost of equity and WACC from company financials. The risk-free rate is matched to the company's reporting currency where available. Sector fallbacks fill in where company data is missing.
@@ -22,6 +22,9 @@ A Streamlit app that pulls company financials from yfinance and produces a DCF v
 - Runs two parallel sanity-check pipelines. One gates Excel report generation when critical warnings fire. The other is informational only and writes to Excel.
 - Detects business models where operating-company DCF is structurally inappropriate: banks, insurers, REITs, and asset managers. The report is blocked until the user explicitly overrides.
 - Generates a downloadable Excel workbook. CAPM, Beta, and WACC sheets use auditable Excel formulas; DCF tier outputs and diagnostic sections are written as calculated report values.
+
+![EquityLens dashboard](docs/screenshots/01_dashboard_jnj.png)
+*Main dashboard view (JNJ shown)*
 
 ## Tech stack
 
@@ -124,6 +127,9 @@ I tested the model across mature, growth, cyclical, transition, and out-of-scope
 
 The first tier that produces an accepted result becomes the selected estimate. Tiers below the selected one are still computed and shown for transparency. The 70% acceptance band reflects my view that DCF is one input only. Beyond plus-minus 70%, the model is not really estimating anymore, it is extrapolating, and the user should rely on multiples or qualitative analysis instead.
 
+![Neste 5-tier fallback example](docs/screenshots/03_neste_tier4_fallback.png)
+*Neste case (Excel report view): Tiers 1-3 rejected, Tier 4 multiples valuation accepted, Tier 5 shown as reference floor*
+
 ## Reverse DCF
 
 Reverse DCF is a **diagnostic tool**, not a valuation tier. It holds Tier 1 inputs constant (latest-FY margin, WACC, terminal growth, all working-capital and CapEx ratios). Then it solves for the year-1-to-5 revenue growth rate that would make the implied price equal the market price. The solver uses `scipy.optimize.brentq` with `xtol=1e-6, maxiter=100` over the range -10% to +50%. There is a deterministic bisection fallback if scipy is not available.
@@ -135,6 +141,9 @@ There are three output cases:
 - **Case C (not yet computed).** Hidden until the valuation runs.
 
 Reverse DCF is the most useful analytical output in this project. It quantifies the gap between the historical numbers and the market narrative. That is the gap the DCF cannot close on its own, because brand strength, AI optionality, switching costs, and regime changes are not historical line items.
+
+![Reverse DCF for MSFT](docs/screenshots/02_msft_reverse_dcf.png)
+*MSFT example: market price implies 42.8% revenue CAGR vs 12.4% historical and 18.3% Yahoo revenue growth estimate*
 
 ## Sector matching
 
@@ -168,6 +177,9 @@ When triggered:
 - Selected tier status reads *"Computed but flagged"*.
 
 This was tested with Bank of America (case 12 above). The gating activates, the Excel banner renders correctly, and the user has to acknowledge the limitation before the report is produced.
+
+![BAC critical warning](docs/screenshots/04_bac_critical.png)
+*Bank of America (Excel report view): critical warning banner and "Computed but flagged" status*
 
 ---
 
