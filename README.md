@@ -41,7 +41,7 @@ A Streamlit app that pulls company financials from yfinance and produces a DCF v
 ## Quick start
 
 ```bash
-git clone https://github.com/<your-username>/equitylens.git
+git clone https://github.com/<Sisukosoo>/equitylens.git
 cd equitylens
 pip install -r requirements.txt
 python -m streamlit run app.py
