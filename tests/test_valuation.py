@@ -25,6 +25,7 @@ from utils.valuation import (
     calculate_cost_of_debt,
     calculate_effective_tax_rate,
     calculate_wacc,
+    floor_cost_of_debt,
     present_value,
     relever_beta,
     solve_reverse_dcf_growth,
@@ -104,6 +105,18 @@ def test_wacc():
     tax = 0.25
     expected = 0.6 * 0.10 + 0.4 * 0.05 * (1 - 0.25)
     assert abs(calculate_wacc(e_weight, d_weight, re, rd, tax) - expected) < 0.0001
+
+
+def test_floor_cost_of_debt_raises_below_risk_free():
+    floored, was_floored = floor_cost_of_debt(0.0203, 0.045)
+    assert was_floored is True
+    assert floored == 0.045
+
+
+def test_floor_cost_of_debt_keeps_value_above_risk_free():
+    unchanged, was_floored = floor_cost_of_debt(0.06, 0.045)
+    assert was_floored is False
+    assert unchanged == 0.06
 
 
 def test_terminal_value():

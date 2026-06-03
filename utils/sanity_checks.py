@@ -403,6 +403,13 @@ def _check_costs(valuation: dict[str, Any], warnings: list[dict[str, str]]) -> N
         _add(warnings, "critical", "WACC is outside the required 3%-20% range.")
     if rd is not None and (rd < 0.01 or rd > 0.15):
         _add(warnings, "critical", "Cost of debt is outside the required 1%-15% range.")
+    if valuation.get("cost_of_debt_floored"):
+        _add(
+            warnings,
+            "info",
+            "Cost of debt was floored at the risk-free rate. The book cost of debt (interest / debt) was below "
+            "the risk-free rate, which understates the marginal cost of borrowing; it was raised to Rf for WACC.",
+        )
     if wacc is not None and re is not None and wacc > re:
         _add(warnings, "critical", "WACC is above cost of equity; check debt cost, weights, and tax shield assumptions.")
 

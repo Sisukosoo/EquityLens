@@ -182,6 +182,24 @@ def calculate_cost_of_debt(interest_expense: float | None, total_debt: float | N
     return rd, False
 
 
+def floor_cost_of_debt(cost_of_debt: float, risk_free_rate: float) -> tuple[float, bool]:
+    """
+    Floor the pre-tax cost of debt at the risk-free rate.
+
+    Formula: Rd = max(Rd, Rf)
+    Source: cost of debt = risk-free rate + credit spread, and a credit spread
+    cannot be negative; book interest / book debt can fall below current Rf when
+    a firm carries old, low-coupon debt.
+    Example: Rd from old debt 2.0%, Rf 4.5% -> Rd floored to 4.5%.
+    Required inputs: computed cost of debt and the currency-matched risk-free rate.
+    Limitation: a pure Rf floor implies a zero credit spread for very strong
+    issuers; it only prevents the economically impossible Rd < Rf.
+    """
+    if risk_free_rate is not None and cost_of_debt < risk_free_rate:
+        return risk_free_rate, True
+    return cost_of_debt, False
+
+
 def calculate_effective_tax_rate(income_tax: float | None, pretax_income: float | None, fallback: float = 0.25) -> tuple[float, bool]:
     """
     Estimate effective tax rate from income tax and pre-tax income.
@@ -557,6 +575,7 @@ def build_valuation_result(
     cost_of_equity = calculate_capm(rf, levered_beta, MARKET_RISK_PREMIUM)
     damodaran_debt_fallback = getattr(beta_match, "industry_cost_of_debt", None)
     cost_of_debt, debt_estimated = calculate_cost_of_debt(interest_expense, total_debt, fallback=damodaran_debt_fallback)
+    cost_of_debt, cost_of_debt_floored = floor_cost_of_debt(cost_of_debt, rf)
     weights = calculate_capital_weights(market_cap, total_debt)
     wacc = calculate_wacc(
         weights["equity_weight"],
@@ -637,6 +656,7 @@ def build_valuation_result(
         "tax_estimated": tax_estimated,
         "cost_of_debt": cost_of_debt,
         "cost_of_debt_estimated": debt_estimated,
+        "cost_of_debt_floored": cost_of_debt_floored,
         "interest_expense_used": interest_expense,
         "depreciation_pct_revenue": selected_assumptions.get("depreciation_pct_revenue", depreciation_pct_revenue),
         "depreciation_source": selected_assumptions.get("depreciation_source", depreciation_source),

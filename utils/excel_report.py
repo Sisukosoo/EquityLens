@@ -631,8 +631,17 @@ def _build_wacc_sheet(sheet, valuation: dict[str, Any]) -> None:
     for row in (5, 6, 7, 9, 12):
         _formula(sheet[f"B{row}"])
     _result(sheet["B12"])
+    cost_of_debt_notes = []
     if valuation.get("cost_of_debt_estimated"):
-        sheet["C9"] = "ESTIMATED - interest expense / total debt missing or outside 1%-15%; Damodaran industry cost of debt used."
+        cost_of_debt_notes.append(
+            "ESTIMATED - interest expense / total debt missing or outside 1%-15%; Damodaran industry cost of debt used."
+        )
+    if valuation.get("cost_of_debt_floored"):
+        cost_of_debt_notes.append(
+            "FLOORED - raised to the risk-free rate; the computed cost of debt was below Rf, which is not economically sensible (a credit spread cannot be negative)."
+        )
+    if cost_of_debt_notes:
+        sheet["C9"] = " ".join(cost_of_debt_notes)
         _input(sheet["C9"])
     chart = PieChart()
     labels = Reference(sheet, min_col=1, min_row=3, max_row=4)
