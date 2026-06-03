@@ -204,6 +204,13 @@ def validate_against_damodaran(
         note = ""
         if name == "Tax rate":
             status, note = _tax_validation_status(calc, bench, country_tax, country)
+            benchmark_clarification = (
+                f"Benchmark column shows Damodaran's marginal statutory rate ({_format_pct(bench)}), "
+                f"not the industry effective rate ({_format_pct(raw_effective_tax_rate)}). The marginal rate "
+                "is used for comparison because industry effective rates are often near zero (tax shields, "
+                "loss carryforwards, offshore structures)."
+            )
+            note = f"{note} {benchmark_clarification}".strip() if note else benchmark_clarification
         elif name == "Cost of Debt":
             status, note = _cost_of_debt_validation_status(difference)
         else:

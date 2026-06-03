@@ -230,7 +230,6 @@ def present_value(value: float, discount_rate: float, period: int) -> float:
 def build_dcf_forecast(
     latest_revenue: float,
     latest_ebit_margin: float,
-    latest_fcf: float,
     wacc: float,
     net_debt: float,
     shares_outstanding: float,
@@ -291,7 +290,6 @@ def build_dcf_forecast(
         "equity_value": equity_value,
         "implied_price": implied_price,
         "upside": upside,
-        "latest_fcf": latest_fcf,
     }
 
 
@@ -547,7 +545,6 @@ def build_valuation_result(
     tangible_equity = _value_or_none(latest_balance.get("tangible_equity"))
     if tangible_equity is None:
         tangible_equity = total_equity
-    fcf = _value_or_none(latest_cash.get("free_cash_flow")) or 0
     shares_outstanding = info.get("sharesOutstanding")
     current_price = info.get("currentPrice") or info.get("regularMarketPrice")
 
@@ -605,7 +602,6 @@ def build_valuation_result(
             cash_flow_metrics=cash_flow_metrics,
             latest_revenue=revenue,
             latest_ebit_margin=ebit_margin,
-            latest_fcf=fcf,
             wacc=wacc,
             net_debt=net_debt,
             shares_outstanding=float(shares_outstanding),
@@ -632,7 +628,6 @@ def build_valuation_result(
                 info=info,
                 tier1=tier1,
                 latest_revenue=revenue,
-                latest_fcf=fcf,
                 wacc=wacc,
                 net_debt=net_debt,
                 shares_outstanding=float(shares_outstanding),
@@ -706,7 +701,6 @@ def _build_dcf_tier_results(
     cash_flow_metrics: pd.DataFrame,
     latest_revenue: float,
     latest_ebit_margin: float,
-    latest_fcf: float,
     wacc: float,
     net_debt: float,
     shares_outstanding: float,
@@ -824,7 +818,6 @@ def _build_dcf_tier_results(
             tier = _run_dcf_tier(
                 tier_input,
                 latest_revenue=latest_revenue,
-                latest_fcf=latest_fcf,
                 wacc=wacc,
                 net_debt=net_debt,
                 shares_outstanding=shares_outstanding,
@@ -911,7 +904,6 @@ def _build_skipped_tier3(tier_input: dict[str, Any]) -> dict[str, Any]:
 def _run_dcf_tier(
     tier_input: dict[str, Any],
     latest_revenue: float,
-    latest_fcf: float,
     wacc: float,
     net_debt: float,
     shares_outstanding: float,
@@ -934,7 +926,6 @@ def _run_dcf_tier(
         dcf = build_dcf_forecast(
             latest_revenue=latest_revenue,
             latest_ebit_margin=assumptions["ebit_margin"],
-            latest_fcf=latest_fcf,
             wacc=wacc,
             net_debt=net_debt,
             shares_outstanding=shares_outstanding,
@@ -982,7 +973,6 @@ def build_reverse_dcf_analysis(
     info: dict[str, Any],
     tier1: dict[str, Any],
     latest_revenue: float,
-    latest_fcf: float,
     wacc: float,
     net_debt: float,
     shares_outstanding: float,
@@ -998,7 +988,6 @@ def build_reverse_dcf_analysis(
     solved = solve_reverse_dcf_growth(
         latest_revenue=latest_revenue,
         latest_ebit_margin=assumptions.get("ebit_margin"),
-        latest_fcf=latest_fcf,
         wacc=wacc,
         net_debt=net_debt,
         shares_outstanding=shares_outstanding,
@@ -1040,7 +1029,6 @@ def build_reverse_dcf_analysis(
 def solve_reverse_dcf_growth(
     latest_revenue: float,
     latest_ebit_margin: float | None,
-    latest_fcf: float,
     wacc: float,
     net_debt: float,
     shares_outstanding: float,
@@ -1096,7 +1084,6 @@ def solve_reverse_dcf_growth(
         return build_dcf_forecast(
             latest_revenue=latest_revenue,
             latest_ebit_margin=float(latest_ebit_margin),
-            latest_fcf=latest_fcf,
             wacc=wacc,
             net_debt=net_debt,
             shares_outstanding=shares_outstanding,
@@ -1720,7 +1707,6 @@ def _valuation_output(implied_price: float | None, current_price: float | None) 
         "equity_value": None,
         "implied_price": implied_price,
         "upside": upside,
-        "latest_fcf": None,
     }
 
 
