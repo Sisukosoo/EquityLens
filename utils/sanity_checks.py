@@ -6,6 +6,8 @@ from typing import Any
 
 import pandas as pd
 
+from utils._shared import to_float as _to_float
+
 
 COUNTRY_STATUTORY_TAX_RATES = {
     "united states": 0.21,
@@ -294,16 +296,6 @@ def _ratio_value(value: Any) -> float:
     """Normalize decimal or percent-like ratio values to decimals."""
     number = float(value)
     return number / 100 if abs(number) > 1 else number
-
-
-def _to_float(value: Any) -> float | None:
-    """Coerce a numeric-like value to float, returning None for missing values."""
-    if value is None or pd.isna(value):
-        return None
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
 
 
 def _statutory_tax_rate(country: str) -> float:

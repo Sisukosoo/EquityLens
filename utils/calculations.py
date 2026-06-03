@@ -10,6 +10,8 @@ from typing import Iterable
 import numpy as np
 import pandas as pd
 
+from utils.logger import log_event
+
 
 def _safe_divide(numerator: float | None, denominator: float | None) -> float | None:
     """Divide values safely and return None when the denominator is unusable."""
@@ -88,11 +90,18 @@ def _percentage(numerator: float | None, denominator: float | None) -> float | N
         return None
 
     # Yahoo Finance sometimes mixes units for individual line items. Try common
-    # scale corrections before accepting an impossible percentage.
+    # scale corrections before accepting an impossible percentage. This is a rare
+    # anomaly path, so log when a correction is applied rather than rescaling
+    # silently (which previously hid genuine data problems).
     if abs(ratio * 100) > 200 and numerator is not None and denominator is not None:
         for scale in (1_000, 1_000_000):
             corrected = _safe_divide(float(numerator) / scale, denominator)
             if corrected is not None and abs(corrected * 100) <= 200:
+                log_event(
+                    f"Percentage rescaled by {scale}x for a likely unit mismatch: "
+                    f"raw={ratio * 100:.1f}%, corrected={corrected * 100:.1f}%",
+                    "calculation_warning",
+                )
                 ratio = corrected
                 break
 

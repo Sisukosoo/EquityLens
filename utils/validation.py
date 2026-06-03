@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from typing import Any
-from urllib.parse import urlparse
 
 import pandas as pd
 
@@ -15,6 +14,7 @@ except ImportError:  # pragma: no cover
 from config import DAMODARAN_MARGINAL_TAX_RATE_EUROPE, DAMODARAN_MARGINAL_TAX_RATE_USA
 from utils.damodaran import DAMODARAN_UPDATED, _find_column, _ratio_to_decimal, _to_float, load_damodaran_table, match_industry
 from utils.logger import append_log, log_event
+from utils._shared import source_filename as _source_filename
 
 
 WACC_URLS = {
@@ -418,11 +418,6 @@ def _country_tax_rate(country: str | None) -> float | None:
     if not country:
         return None
     return COUNTRY_TAX_RATES.get(str(country).strip().lower())
-
-
-def _source_filename(url: str) -> str:
-    """Return workbook filename from a Damodaran URL."""
-    return urlparse(url).path.rsplit("/", 1)[-1] or url
 
 
 def _validation_status(difference: float | None) -> str:

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from urllib.parse import urlparse
 from typing import Any
 
 import pandas as pd
@@ -22,6 +21,12 @@ except ImportError:  # pragma: no cover - allows tests without Streamlit
 
 from utils.logger import log_event
 from utils.valuation import relever_beta
+from utils._shared import (
+    make_unique_labels as _make_unique_columns,
+    normalize_label as _norm,
+    source_filename as _source_filename,
+    to_float as _to_float,
+)
 
 
 BETA_URLS = {
@@ -107,11 +112,6 @@ def select_beta_source(ticker: str) -> tuple[str, str]:
     if "." not in normalized:
         return "us", BETA_URLS["us"]
     return "global", BETA_URLS["global"]
-
-
-def _source_filename(url: str) -> str:
-    """Return the workbook filename from a Damodaran source URL."""
-    return urlparse(url).path.rsplit("/", 1)[-1] or url
 
 
 def _match_processor(value: Any) -> str:
@@ -211,42 +211,6 @@ def _find_header_row_with_score(raw: pd.DataFrame) -> tuple[int, int]:
             best_score = score
             best_row = idx
     return int(best_row), int(best_score)
-
-
-def _make_unique_columns(values: list[Any]) -> list[str]:
-    """
-    Build unique cleaned DataFrame column names from a raw Damodaran header row.
-
-    Formula: not applicable.
-    Source: internal Excel parsing helper.
-    Example: blank headers become 'unnamed_1', duplicate headers get suffixes.
-    Required inputs: raw header row values.
-    Limitation: keeps only one header row; multi-row labels are not combined.
-    """
-    columns = []
-    counts: dict[str, int] = {}
-    for index, value in enumerate(values):
-        if pd.isna(value) or str(value).strip() == "":
-            base = f"unnamed_{index + 1}"
-        else:
-            base = str(value).strip()
-        count = counts.get(base, 0)
-        counts[base] = count + 1
-        columns.append(base if count == 0 else f"{base}_{count + 1}")
-    return columns
-
-
-def _norm(text: str) -> str:
-    """
-    Normalize column names for fuzzy lookup.
-
-    Formula: lower-case and remove non-alphanumeric characters.
-    Source: internal normalization.
-    Example: 'Unlevered beta corrected for cash' -> 'unleveredbetacorrectedforcash'.
-    Required inputs: text.
-    Limitation: may collapse distinct labels with similar names.
-    """
-    return "".join(ch for ch in str(text).lower() if ch.isalnum())
 
 
 def _find_column(frame: pd.DataFrame, candidates: tuple[str, ...]) -> str | None:
@@ -524,24 +488,6 @@ def build_beta_match(data: dict, selected_industry: str | None = None) -> tuple[
     return match, table
 
 
-def _to_float(value: Any) -> float | None:
-    """
-    Convert a value to float safely.
-
-    Formula: not applicable.
-    Source: internal data cleaning.
-    Example: '1.05' -> 1.05.
-    Required inputs: any value.
-    Limitation: non-numeric strings return None.
-    """
-    try:
-        if pd.isna(value):
-            return None
-        return float(value)
-    except (TypeError, ValueError):
-        return None
-
-
 def _ratio_to_decimal(value: Any) -> float | None:
     """
     Convert Damodaran percentage-like values to decimals.
@@ -555,6 +501,10 @@ def _ratio_to_decimal(value: Any) -> float | None:
     number = _to_float(value)
     if number is None:
         return None
+    # Inputs here are tax rate, D/E, and cost of debt, which arrive either as a
+    # decimal (0.25) or a percent (25). >3 is assumed to be percent form. Caveat:
+    # a genuine D/E above 3.0x (300%+) for a highly leveraged industry would be
+    # misread as a percent; such firms (mostly financials) are gated elsewhere.
     if abs(number) > 3:
         return number / 100
     return number

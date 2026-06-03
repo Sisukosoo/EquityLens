@@ -1326,7 +1326,14 @@ def render_valuation_sidebar(
     progress = st.progress(0)
     status = st.empty()
     status.info("Running unit tests...")
-    test_status, test_output = run_pytest_before_excel()
+    # The test suite does not change within a running session, so run the gate
+    # once and reuse the result instead of paying the subprocess cost per click.
+    cached_gate = st.session_state.get("pytest_gate_result")
+    if cached_gate is not None:
+        test_status, test_output = cached_gate
+    else:
+        test_status, test_output = run_pytest_before_excel()
+        st.session_state["pytest_gate_result"] = (test_status, test_output)
     if test_status == "failed":
         st.error("Unit tests failed. Excel report generation stopped.")
         st.code(test_output)

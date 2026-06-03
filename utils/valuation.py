@@ -9,6 +9,14 @@ import pandas as pd
 import yfinance as yf
 
 from utils.logger import log_event
+from utils._shared import (
+    make_unique_labels as _make_unique_labels,
+    normalize_label as _normalize_text,
+    source_filename as _source_filename,
+    to_float as _value_or_none,
+)
+
+_normalized_label = _normalize_text
 
 
 # Equity risk premium: hardcoded constant (Damodaran's ERP estimate, Jan 2026).
@@ -445,18 +453,6 @@ def _load_currency_risk_free_table(url: str) -> pd.DataFrame:
     return frame
 
 
-def _make_unique_labels(values: list[Any]) -> list[str]:
-    """Build unique DataFrame labels from a raw header row."""
-    labels = []
-    counts: dict[str, int] = {}
-    for index, value in enumerate(values):
-        base = f"unnamed_{index + 1}" if pd.isna(value) or str(value).strip() == "" else str(value).strip()
-        count = counts.get(base, 0)
-        counts[base] = count + 1
-        labels.append(base if count == 0 else f"{base}_{count + 1}")
-    return labels
-
-
 def _find_risk_free_currency_column(frame: pd.DataFrame) -> str | None:
     """Find the currency-code column in Damodaran's currency risk-free workbook."""
     for column in frame.columns:
@@ -493,16 +489,6 @@ def _risk_free_rate_to_decimal(value: Any) -> float | None:
     if abs(number) > 0.15:
         return number / 100
     return number
-
-
-def _normalized_label(value: Any) -> str:
-    """Normalize labels for loose column matching."""
-    return "".join(ch for ch in str(value).lower() if ch.isalnum())
-
-
-def _source_filename(url: str) -> str:
-    """Return the filename portion of a source URL."""
-    return str(url).rsplit("/", 1)[-1]
 
 
 def build_valuation_result(
@@ -1677,11 +1663,6 @@ def _find_damodaran_column(frame: pd.DataFrame, fragment_sets: tuple[tuple[str, 
     return None
 
 
-def _normalize_text(value: Any) -> str:
-    """Normalize loose Damodaran labels for column matching."""
-    return "".join(ch for ch in str(value).lower() if ch.isalnum())
-
-
 def _equity_value_to_price(equity_value_millions: float | None, shares_outstanding: float | None) -> float | None:
     """Convert equity value in millions to per-share price."""
     if equity_value_millions is None or shares_outstanding in (None, 0):
@@ -1740,24 +1721,6 @@ def _ratio_like_to_decimal(value: Any) -> float | None:
     if abs(number) > 3:
         return number / 100
     return number
-
-
-def _value_or_none(value: Any) -> float | None:
-    """
-    Convert a pandas/numeric value to float or None.
-
-    Formula: not applicable.
-    Source: internal data cleaning.
-    Example: pd.NA -> None, 100 -> 100.0.
-    Required inputs: any scalar.
-    Limitation: non-numeric strings return None.
-    """
-    try:
-        if value is None or pd.isna(value):
-            return None
-        return float(value)
-    except (TypeError, ValueError):
-        return None
 
 
 def _to_millions_safe(value: Any) -> float | None:

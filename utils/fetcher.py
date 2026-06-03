@@ -5,6 +5,8 @@ from __future__ import annotations
 import pandas as pd
 import yfinance as yf
 
+from utils.logger import log_event
+
 
 class FinancialDataError(Exception):
     """Raised when financial data cannot be fetched or validated."""
@@ -32,48 +34,50 @@ def _limit_annual_columns(statement: pd.DataFrame, years: int = 5) -> pd.DataFra
 
 
 def _fetch_statement(ticker_obj: yf.Ticker, statement_name: str) -> pd.DataFrame:
-    """Fetch one yearly statement with a property fallback."""
-    statement = pd.DataFrame()
-    fallback = pd.DataFrame()
+    """Fetch one yearly statement, using the legacy property only when the primary call is empty."""
+    primary_getters = {
+        "income": lambda: ticker_obj.get_income_stmt(freq="yearly"),
+        "balance": lambda: ticker_obj.get_balance_sheet(freq="yearly"),
+        "cash": lambda: ticker_obj.get_cash_flow(freq="yearly"),
+    }
+    fallback_getters = {
+        "income": lambda: ticker_obj.financials,
+        "balance": lambda: ticker_obj.balance_sheet,
+        "cash": lambda: ticker_obj.cashflow,
+    }
+    if statement_name not in primary_getters:
+        raise ValueError(f"Unknown statement: {statement_name}")
 
-    try:
-        if statement_name == "income":
-            statement = ticker_obj.get_income_stmt(freq="yearly")
-        elif statement_name == "balance":
-            statement = ticker_obj.get_balance_sheet(freq="yearly")
-        elif statement_name == "cash":
-            statement = ticker_obj.get_cash_flow(freq="yearly")
-        else:
-            raise ValueError(f"Unknown statement: {statement_name}")
-    except Exception:
-        statement = pd.DataFrame()
-
-    try:
-        if statement_name == "income":
-            fallback = ticker_obj.financials
-        elif statement_name == "balance":
-            fallback = ticker_obj.balance_sheet
-        elif statement_name == "cash":
-            fallback = ticker_obj.cashflow
-    except Exception:
-        fallback = pd.DataFrame()
-
+    statement = _safe_fetch(primary_getters[statement_name], statement_name, "primary")
+    # Only hit the legacy property when the primary call returned nothing; this
+    # avoids a second network round-trip per statement on the common path.
     if statement is None or statement.empty:
-        statement = fallback
-
+        statement = _safe_fetch(fallback_getters[statement_name], statement_name, "fallback")
     return _limit_annual_columns(statement)
+
+
+def _safe_fetch(getter, statement_name: str, source: str) -> pd.DataFrame:
+    """Call a yfinance getter, logging and absorbing failures instead of crashing the load."""
+    try:
+        result = getter()
+    except Exception as exc:
+        log_event(f"yfinance {source} {statement_name} fetch failed: {exc}", "fetch_warning")
+        return pd.DataFrame()
+    return result if result is not None else pd.DataFrame()
 
 
 def _fetch_dividends(ticker_obj: yf.Ticker, years: int = 8) -> pd.Series:
     """Fetch dividend history and keep the latest annual observations."""
     try:
         dividends = ticker_obj.dividends
-    except Exception:
+    except Exception as exc:
+        log_event(f"yfinance dividends fetch failed: {exc}", "fetch_warning")
         return pd.Series(dtype=float)
 
     if dividends is None or dividends.empty:
         return pd.Series(dtype=float)
 
+    dividends = dividends.copy()
     dividends.index = pd.to_datetime(dividends.index, errors="coerce")
     dividends = dividends.loc[dividends.index.notna()]
     annual_dividends = dividends.groupby(dividends.index.year).sum()
@@ -84,7 +88,8 @@ def _fetch_earnings_surprises(ticker_obj: yf.Ticker) -> pd.DataFrame:
     """Fetch available analyst EPS surprise data from Yahoo Finance."""
     try:
         earnings_dates = ticker_obj.get_earnings_dates(limit=12)
-    except Exception:
+    except Exception as exc:
+        log_event(f"yfinance earnings dates fetch failed: {exc}", "fetch_warning")
         return pd.DataFrame()
 
     if earnings_dates is None or earnings_dates.empty:
