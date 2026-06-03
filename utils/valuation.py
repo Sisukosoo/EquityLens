@@ -11,6 +11,8 @@ import yfinance as yf
 from utils.logger import log_event
 
 
+# Equity risk premium: hardcoded constant (Damodaran's ERP estimate, Jan 2026).
+# This is NOT loaded from a live Damodaran file; update manually when the source changes.
 MARKET_RISK_PREMIUM = 0.055
 DEFAULT_TERMINAL_GROWTH = 0.025
 STANDARD_DCF_MAX_DEVIATION = 0.70
@@ -309,7 +311,6 @@ def fetch_risk_free_rate() -> dict[str, Any]:
     latest = history.dropna(subset=["Close"]).iloc[-1]
     close = float(latest["Close"])
     rate = close / 100 if close > 1 else close
-    print(f"Risk-free rate raw={close}, scaled={rate}")
     if rate < 0.005 or rate > 0.15:
         log_event(f"Risk-free rate sanity warning: raw_close={close}, parsed_rate={rate}", "valuation_warning")
         raise ValueError(f"Risk-free rate outside 0.5%-15% sanity range: raw={close}, scaled={rate}")
@@ -560,6 +561,7 @@ def build_valuation_result(
         de_ratio = 0.25
         de_estimated = True
 
+    unlevered_beta_estimated = beta_match.unlevered_beta is None
     unlevered_beta = beta_match.unlevered_beta if beta_match.unlevered_beta is not None else 1.0
     levered_beta = relever_beta(unlevered_beta, de_ratio, tax_rate)
     rf = risk_free["rate"]
@@ -585,7 +587,7 @@ def build_valuation_result(
         if terminal_cagr is not None
         else "Default terminal growth assumption"
     )
-    depreciation_pct_revenue = _historical_depreciation_pct_revenue(income_metrics)
+    depreciation_pct_revenue, depreciation_source = _historical_depreciation_assumption(income_metrics)
     capex_pct_revenue, capex_source = _historical_capex_assumption(income_metrics, cash_flow_metrics)
     dcf_tiers = []
     dcf = {}
@@ -611,19 +613,12 @@ def build_valuation_result(
             standard_revenue_growth=revenue_growth,
             standard_revenue_growth_source=revenue_growth_source,
             standard_depreciation_pct_revenue=depreciation_pct_revenue,
+            standard_depreciation_source=depreciation_source,
             standard_capex_pct_revenue=capex_pct_revenue,
             standard_capex_source=capex_source,
             beta_match=beta_match,
         )
         dcf = selected_tier.get("dcf", {}) if selected_tier else {}
-        print(
-            "DCF debug "
-            f"implied_price_streamlit={dcf.get('implied_price')}, "
-            f"current_price={current_price}, "
-            f"upside={dcf.get('upside')}, "
-            f"wacc={wacc}, "
-            f"tier={selected_tier.get('tier') if selected_tier else 'N/A'}"
-        )
         tier1 = next((tier for tier in dcf_tiers if tier.get("tier") == 1), None)
         if tier1:
             reverse_dcf = build_reverse_dcf_analysis(
@@ -656,6 +651,7 @@ def build_valuation_result(
         "cost_of_debt_estimated": debt_estimated,
         "interest_expense_used": interest_expense,
         "depreciation_pct_revenue": selected_assumptions.get("depreciation_pct_revenue", depreciation_pct_revenue),
+        "depreciation_source": selected_assumptions.get("depreciation_source", depreciation_source),
         "capex_pct_revenue": selected_assumptions.get("capex_pct_revenue", capex_pct_revenue),
         "capex_source": selected_assumptions.get("capex_source", capex_source),
         "revenue_growth": selected_assumptions.get("revenue_growth", revenue_growth),
@@ -675,6 +671,7 @@ def build_valuation_result(
         "risk_free_warning": risk_free.get("warning"),
         "market_risk_premium": MARKET_RISK_PREMIUM,
         "unlevered_beta": unlevered_beta,
+        "unlevered_beta_estimated": unlevered_beta_estimated,
         "levered_beta": levered_beta,
         "yfinance_beta": info.get("beta"),
         "damodaran_sector": getattr(beta_match, "matched_industry", None),
@@ -719,6 +716,7 @@ def _build_dcf_tier_results(
     standard_capex_pct_revenue: float,
     beta_match: Any,
     standard_capex_source: str = "3-year historical average",
+    standard_depreciation_source: str = "recent historical average",
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Run the three DCF tiers and choose the first result that passes sanity gates."""
     smoothed_margin, smoothed_margin_source = _historical_margin_assumption(income_metrics, "ebit_margin")
@@ -752,7 +750,7 @@ def _build_dcf_tier_results(
                 "ebit_margin": latest_ebit_margin,
                 "ebit_margin_source": "latest FY actual",
                 "depreciation_pct_revenue": standard_depreciation_pct_revenue,
-                "depreciation_source": "recent historical average",
+                "depreciation_source": standard_depreciation_source,
                 "capex_pct_revenue": standard_capex_pct_revenue,
                 "capex_source": standard_capex_source,
                 "working_capital_pct_revenue": working_capital_pct_revenue,
@@ -1816,18 +1814,25 @@ def _latest_available_value(frame: pd.DataFrame, column: str) -> float | None:
 
 
 def _historical_depreciation_pct_revenue(income_metrics: pd.DataFrame, fallback: float = 0.03, years: int = 3) -> float:
+    """Return D&A as a revenue percentage (value only; see _historical_depreciation_assumption)."""
+    value, _source = _historical_depreciation_assumption(income_metrics, fallback, years)
+    return value
+
+
+def _historical_depreciation_assumption(income_metrics: pd.DataFrame, fallback: float = 0.03, years: int = 3) -> tuple[float, str]:
     """
-    Estimate D&A as a percentage of revenue using EBITDA minus EBIT.
+    Estimate D&A as a percentage of revenue using EBITDA minus EBIT, plus a source label.
 
     Formula: D&A % revenue = average((EBITDA - EBIT) / revenue) over available recent years.
     Source: yfinance income statement metrics; Damodaran FCFF model convention.
     Example: Apple FY2025 D&A = 144,748 - 133,050 = 11,698M = 2.81% of revenue.
     Required inputs: income_metrics with revenue, EBITDA, and EBIT.
-    Limitation: falls back to 3% if EBITDA/EBIT data is missing or invalid.
+    Limitation: falls back to 3% (clearly labelled) if EBITDA/EBIT data is missing or invalid.
     """
+    fallback_source = "Default 3% (depreciation/amortization data not available)"
     required = {"revenue", "ebitda", "ebit"}
     if income_metrics.empty or not required.issubset(income_metrics.columns):
-        return fallback
+        return fallback, fallback_source
     frame = income_metrics.tail(years).copy()
     revenue = pd.to_numeric(frame["revenue"], errors="coerce")
     ebitda = pd.to_numeric(frame["ebitda"], errors="coerce")
@@ -1835,8 +1840,8 @@ def _historical_depreciation_pct_revenue(income_metrics: pd.DataFrame, fallback:
     ratios = ((ebitda - ebit) / revenue).replace([float("inf"), -float("inf")], pd.NA).dropna()
     ratios = ratios[(ratios >= 0) & (ratios <= 0.2)]
     if ratios.empty:
-        return fallback
-    return float(ratios.mean())
+        return fallback, fallback_source
+    return float(ratios.mean()), f"{min(years, len(ratios))}-year historical average"
 
 
 def _historical_capex_pct_revenue(

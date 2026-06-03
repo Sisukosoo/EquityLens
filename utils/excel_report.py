@@ -510,6 +510,9 @@ def _build_beta_sheet(sheet, data: dict, beta_match: Any, valuation: dict[str, A
         "Damodaran industry beta is often more stable than a single-stock regression beta because it averages operating risk across comparable companies.",
         "Financial Analyzer",
     )
+    if valuation.get("unlevered_beta_estimated"):
+        sheet["C8"] = "ESTIMATED - Damodaran unlevered beta missing for matched industry; market-average 1.0 assumed."
+        _input(sheet["C8"])
     if valuation.get("de_estimated"):
         sheet["C9"] = "ESTIMATED - company D/E missing, Damodaran industry average used."
         _input(sheet["C9"])
@@ -539,7 +542,7 @@ def _build_capm_sheet(sheet, valuation: dict[str, Any]) -> None:
     rows = [
         ("Risk-free rate", valuation.get("risk_free_rate"), rf_note),
         ("Levered Beta", "='Beta (Damodaran)'!B11", "Damodaran industry beta re-levered to company D/E"),
-        ("Market Risk Premium", valuation.get("market_risk_premium"), "Damodaran recommendation: 5.5%"),
+        ("Market Risk Premium", valuation.get("market_risk_premium"), "Hardcoded source-code constant (Damodaran ERP estimate, Jan 2026); not loaded from a live source"),
         ("Cost of Equity", "=B3+B4*B5", "CAPM formula"),
     ]
     sheet.append(["Input", "Value", "Explanation"])
@@ -800,7 +803,7 @@ def _write_reverse_dcf_section(sheet, start_row: int, valuation: dict[str, Any])
             f"Same as Tier 1 DCF assumption: {reverse.get('tier1_growth_source') or 'see Tier 1 Assumptions section'}",
         ),
         (
-            "Yahoo revenue growth estimate",
+            "Yahoo trailing revenue growth",
             reverse.get("analyst_consensus_growth"),
             "pct",
             reverse.get("analyst_consensus_source") or "N/A - yfinance revenueGrowth unavailable",

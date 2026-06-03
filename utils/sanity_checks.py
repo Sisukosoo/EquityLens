@@ -349,6 +349,7 @@ def _check_default_assumptions(valuation: dict[str, Any], warnings: list[dict[st
     for label, source_key in (
         ("CapEx", "capex_source"),
         ("working capital", "working_capital_source"),
+        ("D&A", "depreciation_source"),
     ):
         source = assumptions.get(source_key) or valuation.get(source_key)
         if isinstance(source, str) and source.lower().startswith("default"):
@@ -380,6 +381,14 @@ def _check_beta(valuation: dict[str, Any], warnings: list[dict[str, str]]) -> No
     """Validate beta and D/E ratio."""
     beta = valuation.get("levered_beta")
     de_ratio = valuation.get("de_ratio")
+    if valuation.get("unlevered_beta_estimated"):
+        _add(
+            warnings,
+            "warning",
+            "Damodaran unlevered beta was missing for the matched industry; a market-average 1.0 was assumed. "
+            "Cost of equity (and therefore WACC) is an estimate rather than a sector-derived value.",
+            "Default assumptions",
+        )
     if beta is not None and (beta < 0 or beta > 3):
         _add(warnings, "warning", "Levered beta is outside the usual 0-3 range.")
     if de_ratio is not None and de_ratio > 5:

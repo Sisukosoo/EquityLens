@@ -364,7 +364,6 @@ def match_industry_details(company_industry: str, damodaran_frame: pd.DataFrame)
         return details
 
     details["top_matches"] = _top_matches(company_industry, choices)
-    _print_top_matches(company_industry, choices)
 
     whitelist_match = _whitelist_industry_match(company_industry, choices)
     if whitelist_match:
@@ -375,7 +374,6 @@ def match_industry_details(company_industry: str, damodaran_frame: pd.DataFrame)
                 "matching_method": "manual mapping",
             }
         )
-        _print_match_decision(company_industry, details)
         return details
 
     if process is not None and fuzz is not None:
@@ -394,7 +392,6 @@ def match_industry_details(company_industry: str, damodaran_frame: pd.DataFrame)
                 "matching_method": "fuzzy token_set_ratio",
             }
         )
-        _print_match_decision(company_industry, details)
         return details
 
     # Minimal fallback without rapidfuzz.
@@ -411,7 +408,6 @@ def match_industry_details(company_industry: str, damodaran_frame: pd.DataFrame)
             "matching_method": "difflib fallback",
         }
     )
-    _print_match_decision(company_industry, details)
     return details
 
 
@@ -439,47 +435,6 @@ def _top_matches(company_industry: str, choices: list[str]) -> list[dict[str, An
         for choice in choices
     ]
     return sorted(scored, key=lambda item: item["score"], reverse=True)[:5]
-
-
-def _print_top_matches(company_industry: str, choices: list[str]) -> None:
-    """
-    Print the top five fuzzy matches for debugging industry mapping.
-
-    Formula: token_set_ratio score by candidate industry.
-    Source: rapidfuzz token_set_ratio, with difflib fallback.
-    Example: Communication Equipment should show Telecom. Equipment near the top.
-    Required inputs: company industry and Damodaran industry choices.
-    Limitation: debug print goes to the Streamlit/PyCharm console.
-    """
-    print(f"Top 5 matches for '{company_industry}':")
-    if process is not None and fuzz is not None:
-        matches = process.extract(
-            company_industry,
-            choices,
-            scorer=fuzz.token_set_ratio,
-            processor=_match_processor,
-            limit=5,
-        )
-        for match, score, _index in matches:
-            print(f"  {match}: {score:.1f}")
-        return
-    import difflib
-
-    scored = [
-        (choice, difflib.SequenceMatcher(None, company_industry.lower(), choice.lower()).ratio() * 100)
-        for choice in choices
-    ]
-    for match, score in sorted(scored, key=lambda item: item[1], reverse=True)[:5]:
-        print(f"  {match}: {score:.1f}")
-
-
-def _print_match_decision(company_industry: str, details: dict[str, Any]) -> None:
-    """Print the selected sector and matching method for debug diagnostics."""
-    print(
-        "Chosen Damodaran sector for "
-        f"'{company_industry}': {details.get('matched_industry')} "
-        f"({details.get('confidence', 0.0):.1f}%, {details.get('matching_method')})"
-    )
 
 
 def _whitelist_industry_match(company_industry: str, choices: list[str]) -> tuple[str, float] | None:

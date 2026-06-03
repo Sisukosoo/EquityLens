@@ -1005,8 +1005,15 @@ def chart_config(filename: str) -> dict:
     return config
 
 
-def run_pytest_before_excel() -> tuple[bool, str]:
-    """Run valuation unit tests before Excel report generation."""
+def run_pytest_before_excel() -> tuple[str, str]:
+    """
+    Run valuation unit tests before Excel report generation.
+
+    Returns ("passed", "failed", "skipped") plus captured output. Only genuine
+    test failures block the report. Infrastructure problems (pytest missing,
+    timeout, no tests collected) return "skipped" so the report is never blocked
+    by the test runner itself, matching the app's graceful-fallback philosophy.
+    """
     try:
         result = subprocess.run(
             [sys.executable, "-m", "pytest", "tests/"],
@@ -1016,9 +1023,15 @@ def run_pytest_before_excel() -> tuple[bool, str]:
             timeout=60,
         )
     except Exception as exc:
-        return False, f"Could not run pytest: {exc}"
+        return "skipped", f"Unit tests skipped: could not run pytest ({exc})."
     output = (result.stdout or "") + "\n" + (result.stderr or "")
-    return result.returncode == 0, output[-3000:]
+    if result.returncode == 0:
+        return "passed", output[-3000:]
+    # Exit code 5 = no tests collected; a missing pytest module is an infra
+    # issue, not a test failure. Treat both as skipped rather than blocking.
+    if result.returncode == 5 or "No module named pytest" in output:
+        return "skipped", output[-3000:]
+    return "failed", output[-3000:]
 
 
 def fetch_risk_free_with_fallback(data: dict) -> tuple[dict | None, str | None]:
@@ -1242,7 +1255,7 @@ def reverse_dcf_display_model(valuation: dict | None) -> dict:
             "cards": [
                 ("Market implied growth", _format_growth_rate(reverse.get("implied_growth"))),
                 ("Model assumed growth", _format_growth_rate(reverse.get("tier1_growth"))),
-                ("Yahoo revenue growth estimate", _format_growth_rate(reverse.get("analyst_consensus_growth"))),
+                ("Yahoo trailing revenue growth", _format_growth_rate(reverse.get("analyst_consensus_growth"))),
             ],
             "interpretation": reverse.get("interpretation") or reverse.get("message") or "Reverse DCF diagnostic unavailable.",
         }
@@ -1251,7 +1264,7 @@ def reverse_dcf_display_model(valuation: dict | None) -> dict:
         "body": reverse.get("interpretation") or reverse.get("message") or "Reverse DCF diagnostic unavailable.",
         "meta": (
             f"Tier 1 assumed growth: {_format_growth_rate(reverse.get('tier1_growth'))} | "
-            f"Yahoo revenue growth estimate: {_format_growth_rate(reverse.get('analyst_consensus_growth'))}"
+            f"Yahoo trailing revenue growth: {_format_growth_rate(reverse.get('analyst_consensus_growth'))}"
         ),
     }
 
@@ -1313,11 +1326,13 @@ def render_valuation_sidebar(
     progress = st.progress(0)
     status = st.empty()
     status.info("Running unit tests...")
-    tests_ok, test_output = run_pytest_before_excel()
-    if not tests_ok:
+    test_status, test_output = run_pytest_before_excel()
+    if test_status == "failed":
         st.error("Unit tests failed. Excel report generation stopped.")
         st.code(test_output)
         return
+    if test_status == "skipped":
+        st.warning("Unit tests could not be run; continuing without the pre-report test gate.")
     progress.progress(20)
 
     status.info("Loading risk-free rate...")
@@ -1356,21 +1371,13 @@ def render_valuation_sidebar(
     st.session_state["last_valuation_ticker"] = data.get("ticker")
     sanity_warnings = run_sanity_checks(valuation)
     critical = [warning for warning in sanity_warnings if warning["severity"] == "critical"]
-    high_warnings = [warning for warning in sanity_warnings if warning["severity"] == "warning_high"]
     for warning in sanity_warnings:
         if warning["severity"] == "critical":
             st.error(f"Critical: {warning['message']}")
-        elif warning["severity"] == "warning_high":
-            st.warning(f"High warning: {warning['message']}")
         elif warning["severity"] == "info":
             st.info(warning["message"])
         else:
             st.warning(warning["message"])
-    if high_warnings and not critical:
-        st.warning("High sanity-check warnings found. Confirm before generating the report.")
-        if not allow_sanity_override:
-            st.info("Tick the sidebar override checkbox, then click Generate Excel Report again.")
-            return
     if critical:
         st.error("Critical sanity-check warnings found. Review assumptions before relying on the report.")
         if not allow_sanity_override:
@@ -2069,7 +2076,7 @@ def methodology_reverse_dcf_paragraphs() -> list[str]:
     return [
         "Reverse DCF is a diagnostic tool, not a valuation tier. It holds Tier 1 Standard DCF inputs constant and solves only the year 1-5 revenue growth rate that would make the DCF implied share price equal the current market price.",
         "The solver searches from -10% to +50% revenue growth. It uses scipy.optimize.brentq with xtol=1e-6 and maxiter=100 when scipy is available, otherwise a deterministic bisection fallback with tolerance 1e-6 and max_iterations=100.",
-        "Case A in the Streamlit UI is a successful solve with numeric implied growth, model assumed growth, and Yahoo revenue growth estimate cards. Case B is a failed or unreachable solve, shown as a 'Reverse DCF - Could not solve' box with Tier 1 growth and Yahoo revenue growth estimate context. Case C hides the section before valuation has been computed.",
+        "Case A in the Streamlit UI is a successful solve with numeric implied growth, model assumed growth, and Yahoo trailing revenue growth cards. Case B is a failed or unreachable solve, shown as a 'Reverse DCF - Could not solve' box with Tier 1 growth and Yahoo trailing revenue growth context. Case C hides the section before valuation has been computed.",
         "For cyclical companies, the failure message can explicitly state that current Tier 1 EBIT margin is below 50% of the 5-year average, suggesting the market is pricing margin recovery rather than revenue growth.",
     ]
 

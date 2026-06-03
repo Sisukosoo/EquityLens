@@ -84,10 +84,6 @@ def normalize_wacc_table(frame: pd.DataFrame) -> pd.DataFrame:
     coe_col = _find_column(frame, ("costofequity", "costofequity"))
     cod_col = _find_column(frame, ("costofdebt", "pretaxtcostofdebt"))
     tax_col = _find_best_tax_column(frame)
-    print(f"Damodaran columns: {frame.columns.tolist()}")
-    print(f"Tax rate columns found: {[c for c in frame.columns if 'tax' in str(c).lower()]}")
-    if tax_col:
-        print(f"Tax rate values found: {frame[tax_col].head()}")
     log_event(
         "Damodaran validation columns found: "
         f"industry={industry_col}, wacc={wacc_col}, coe={coe_col}, cod={cod_col}, tax={tax_col}; "

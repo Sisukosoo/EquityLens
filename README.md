@@ -12,7 +12,7 @@ A Streamlit app that pulls company financials from yfinance and produces a DCF v
 
 ## What it does
 
-- Pulls company financials, share price, beta, and Yahoo revenue growth estimate data from Yahoo Finance via yfinance.
+- Pulls company financials, share price, beta, and Yahoo trailing revenue growth data from Yahoo Finance via yfinance.
 - Provides a side-by-side peer comparison view (radar chart, FY metrics table, TTM market multiples) for sanity-checking the valuation against a comparable company.
 - Matches the company to a Damodaran (NYU Stern) industry sector. From there it pulls sector benchmarks for beta, cost of debt, EBIT margin, CapEx, and EV/EBITDA, EV/Sales, P/Book multiples.
 - Re-levers the Damodaran industry beta to the company's capital structure.
@@ -74,7 +74,7 @@ I tested the model across mature, growth, cyclical, transition, and out-of-scope
 
 ### Reverse DCF and sector context
 
-| # | Ticker | Reverse DCF implied growth | Tier 1 assumed | Yahoo revenue growth estimate | Damodaran sector |
+| # | Ticker | Reverse DCF implied growth | Tier 1 assumed | Yahoo trailing revenue growth | Damodaran sector |
 |---:|---|---:|---:|---:|---|
 | 1 | JNJ | 7.4% | 5.6% | 9.9% | Drugs (Pharmaceutical) |
 | 2 | KO | 8.9% | 3.7% | 12.1% | Beverage (Soft) |
@@ -95,7 +95,7 @@ I tested the model across mature, growth, cyclical, transition, and out-of-scope
 
 **UnitedHealth (#10) and Nestle (#9)** are the positive-upside cases among DCF-applicable tickers. UnitedHealth's market price has compressed below historical fundamentals, and Tier 1 still works because the inputs are within normal ranges. Nestle moved above market after the currency-specific risk-free rate fix. A CHF-denominated company should not be discounted with a US Treasury rate, and the lower CHF risk-free rate now flows through WACC correctly.
 
-**Big tech (GOOGL, MSFT, AAPL)** show the largest gaps. Reverse DCF is what makes those gaps actually informative. MSFT, for example, needs **42.8% revenue CAGR** to justify $415, while the historical CAGR is 12.4% and the Yahoo revenue growth estimate is 18.3%. The model cannot generate that growth from its inputs, and that is the point. The gap is what the user is supposed to think about.
+**Big tech (GOOGL, MSFT, AAPL)** show the largest gaps. Reverse DCF is what makes those gaps actually informative. MSFT, for example, needs **42.8% revenue CAGR** to justify $415, while the historical CAGR is 12.4% and the Yahoo trailing revenue growth is 18.3%. The model cannot generate that growth from its inputs, and that is the point. The gap is what the user is supposed to think about.
 
 **Neste (#11)** triggered the full 5-tier fallback. Tiers 1, 2, and 3 all produced negative implied prices because Neste's latest-FY EBIT margin is only 1.8%, against a 5-year average of 4.6%. The company is in a transition trough. **Tier 4 multiples valuation** (median of EV/EBITDA, EV/Sales, P/Book) selected EUR 13.04. The reverse DCF solver could not converge, and instead returned an interpretation message: *"current Tier 1 EBIT margin (1.8%) is significantly below the 5-year average (4.6%), suggesting the market is pricing margin recovery rather than revenue growth."*
 
@@ -136,14 +136,14 @@ Reverse DCF is a **diagnostic tool**, not a valuation tier. It holds Tier 1 inpu
 
 There are three output cases:
 
-- **Case A (success).** The numeric implied growth is shown next to the model assumed growth and the Yahoo revenue growth estimate.
+- **Case A (success).** The numeric implied growth is shown next to the model assumed growth and the Yahoo trailing revenue growth.
 - **Case B (no convergence).** A failure message with diagnostic context. For example, when the current EBIT margin is below 50% of the 5-year average, the message flags that the market is probably pricing margin recovery rather than growth.
 - **Case C (not yet computed).** Hidden until the valuation runs.
 
 Reverse DCF is the most useful analytical output in this project. It quantifies the gap between the historical numbers and the market narrative. That is the gap the DCF cannot close on its own, because brand strength, AI optionality, switching costs, and regime changes are not historical line items.
 
 ![Reverse DCF for MSFT](docs/screenshots/02_msft_reverse_dcf.png)
-*MSFT example: market price implies 42.8% revenue CAGR vs 12.4% historical and 18.3% Yahoo revenue growth estimate*
+*MSFT example: market price implies 42.8% revenue CAGR vs 12.4% historical and 18.3% Yahoo trailing revenue growth*
 
 ## Sector matching
 
@@ -205,7 +205,7 @@ These are all listed as `known_limitations`, not `bugs`. They reflect deliberate
 
 ## Data sources and acknowledgments
 
-- **Yahoo Finance via yfinance** for company financials, share prices, betas, USD Treasury yield data, and revenue growth estimate data.
+- **Yahoo Finance via yfinance** for company financials, share prices, betas, USD Treasury yield data, and trailing revenue growth data.
 - **Aswath Damodaran (NYU Stern)** for industry datasets covering currency-specific risk-free rates, betas, WACC, EBIT margins, CapEx ratios, and valuation multiples. The model picks the regional dataset matching the company's listing (US, Europe, Emerging Markets, or Global).
 - **scipy** for the reverse DCF solver (`brentq`).
 - **rapidfuzz** for sector matching.

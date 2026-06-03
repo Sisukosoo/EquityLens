@@ -3,6 +3,7 @@
 import pandas as pd
 
 from utils.sanity_checks import (
+    _check_beta,
     _check_business_model_compatibility,
     _check_default_assumptions,
     _check_beta_methodology_gap,
@@ -168,6 +169,7 @@ def test_default_assumption_check_lists_tier1_missing_data_defaults():
                 "assumptions": {
                     "capex_source": "Default 4% (capital expenditure data not available)",
                     "working_capital_source": "Default 2% (current assets data not available)",
+                    "depreciation_source": "Default 3% (depreciation/amortization data not available)",
                 },
             }
         ]
@@ -179,6 +181,26 @@ def test_default_assumption_check_lists_tier1_missing_data_defaults():
     assert rows[0]["category"] == "Default assumptions"
     assert "CapEx (Default 4%" in rows[0]["message"]
     assert "working capital (Default 2%" in rows[0]["message"]
+    assert "D&A (Default 3%" in rows[0]["message"]
+
+
+def test_check_beta_flags_estimated_unlevered_beta_fallback():
+    warnings = []
+
+    _check_beta({"unlevered_beta_estimated": True, "levered_beta": 1.0, "de_ratio": 0.3}, warnings)
+
+    flagged = [warning for warning in warnings if warning.get("category") == "Default assumptions"]
+    assert flagged
+    assert flagged[0]["severity"] == "warning"
+    assert "market-average 1.0" in flagged[0]["message"]
+
+
+def test_check_beta_does_not_flag_sector_derived_unlevered_beta():
+    warnings = []
+
+    _check_beta({"unlevered_beta_estimated": False, "levered_beta": 1.0, "de_ratio": 0.3}, warnings)
+
+    assert warnings == []
 
 
 def test_risk_free_currency_mismatch_check_flags_usd_fallback():
