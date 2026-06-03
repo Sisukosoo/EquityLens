@@ -190,6 +190,12 @@ def build_balance_sheet_metrics(balance_sheet: pd.DataFrame) -> pd.DataFrame:
         balance_sheet,
         ["Current Liabilities", "Total Current Liabilities"],
     )
+    goodwill_and_intangibles = _find_line(
+        balance_sheet,
+        ["Goodwill And Other Intangible Assets"],
+    )
+    goodwill = _find_line(balance_sheet, ["Goodwill"])
+    other_intangibles = _find_line(balance_sheet, ["Other Intangible Assets"])
 
     rows = []
     for year in _statement_years(balance_sheet):
@@ -202,12 +208,25 @@ def build_balance_sheet_metrics(balance_sheet: pd.DataFrame) -> pd.DataFrame:
         current_assets_raw = _series_value(current_assets, year)
         current_liabilities_raw = _series_value(current_liabilities, year)
 
+        # Tangible book value = equity - goodwill - other intangibles. yfinance may
+        # report a combined line or the two components separately; prefer the combined
+        # line to avoid double counting, and treat any missing piece as zero so a
+        # company with no reported intangibles simply keeps tangible = book equity.
+        combined_intangibles_raw = _series_value(goodwill_and_intangibles, year)
+        if combined_intangibles_raw is not None:
+            intangibles_raw = combined_intangibles_raw
+        else:
+            intangibles_raw = (_series_value(goodwill, year) or 0) + (_series_value(other_intangibles, year) or 0)
+        tangible_equity_raw = None if equity_raw is None else equity_raw - intangibles_raw
+
         rows.append(
             {
                 **period,
                 "total_assets": _to_millions(assets_raw),
                 "total_liabilities": _to_millions(liabilities_raw),
                 "total_equity": _to_millions(equity_raw),
+                "goodwill_and_intangibles": _to_millions(intangibles_raw),
+                "tangible_equity": _to_millions(tangible_equity_raw),
                 "cash": _to_millions(cash_raw),
                 "debt": _to_millions(debt_raw),
                 "net_debt": _to_millions(debt_raw - cash_raw),

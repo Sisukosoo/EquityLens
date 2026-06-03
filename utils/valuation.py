@@ -541,6 +541,12 @@ def build_valuation_result(
     ebit_margin = _ratio_from_percent(latest_income.get("ebit_margin"))
     ebitda = _value_or_none(latest_income.get("ebitda"))
     total_equity = _value_or_none(latest_balance.get("total_equity"))
+    # Tangible book value (equity - goodwill - intangibles). Falls back to book
+    # equity when the tangible figure is unavailable, so nothing breaks if the
+    # balance sheet does not report goodwill/intangible line items.
+    tangible_equity = _value_or_none(latest_balance.get("tangible_equity"))
+    if tangible_equity is None:
+        tangible_equity = total_equity
     fcf = _value_or_none(latest_cash.get("free_cash_flow")) or 0
     shares_outstanding = info.get("sharesOutstanding")
     current_price = info.get("currentPrice") or info.get("regularMarketPrice")
@@ -610,6 +616,7 @@ def build_valuation_result(
             working_capital_source=working_capital_source,
             latest_ebitda=ebitda,
             total_equity=total_equity,
+            tangible_equity=tangible_equity,
             standard_revenue_growth=revenue_growth,
             standard_revenue_growth_source=revenue_growth_source,
             standard_depreciation_pct_revenue=depreciation_pct_revenue,
@@ -717,8 +724,12 @@ def _build_dcf_tier_results(
     beta_match: Any,
     standard_capex_source: str = "3-year historical average",
     standard_depreciation_source: str = "recent historical average",
+    tangible_equity: float | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Run the three DCF tiers and choose the first result that passes sanity gates."""
+    # Tangible book (equity - goodwill - intangibles) drives Tier 4 P/Book and the
+    # Tier 5 floor; fall back to book equity if a tangible figure was not supplied.
+    tangible_equity_value = tangible_equity if tangible_equity is not None else total_equity
     smoothed_margin, smoothed_margin_source = _historical_margin_assumption(income_metrics, "ebit_margin")
     smoothed_growth = max(_historical_revenue_cagr(income_metrics, years=5, fallback=0.0) or 0.0, 0.0)
     smoothed_growth_source = f"{_historical_revenue_cagr_source(income_metrics, years=5)}; floored at 0%"
@@ -833,13 +844,13 @@ def _build_dcf_tier_results(
             net_debt=net_debt,
             shares_outstanding=shares_outstanding,
             current_price=current_price,
-            total_equity=total_equity,
+            tangible_equity=tangible_equity_value,
         )
         tiers.append(tier4)
         if tier4["accepted"]:
             selected = tier4
         tier5 = _build_tangible_book_tier(
-            total_equity=total_equity,
+            tangible_equity=tangible_equity_value,
             shares_outstanding=shares_outstanding,
             current_price=current_price,
         )
@@ -1389,7 +1400,7 @@ def _build_multiples_tier(
     net_debt: float,
     shares_outstanding: float,
     current_price: float | None,
-    total_equity: float | None,
+    tangible_equity: float | None,
 ) -> dict[str, Any]:
     """Build Tier 4 using Damodaran sector multiples."""
     multiples = _load_sector_multiples(beta_match)
@@ -1434,7 +1445,7 @@ def _build_multiples_tier(
 
     pb = multiples.get("price_book")
     pb_error = multiples.get("price_book_error")
-    tangible_book_price = _tangible_book_per_share(total_equity, shares_outstanding)
+    tangible_book_price = _tangible_book_per_share(tangible_equity, shares_outstanding)
     pb_price = None
     if pb is not None and tangible_book_price is not None and tangible_book_price > 0:
         pb_price = pb * tangible_book_price
@@ -1529,12 +1540,12 @@ def _multiples_detail_status(available_count: int) -> str:
 
 
 def _build_tangible_book_tier(
-    total_equity: float | None,
+    tangible_equity: float | None,
     shares_outstanding: float,
     current_price: float | None,
 ) -> dict[str, Any]:
     """Build Tier 5 tangible book value floor."""
-    implied_price = _tangible_book_per_share(total_equity, shares_outstanding)
+    implied_price = _tangible_book_per_share(tangible_equity, shares_outstanding)
     dcf_like = _valuation_output(implied_price, current_price)
     return {
         "tier": 5,
@@ -1547,7 +1558,7 @@ def _build_tangible_book_tier(
         "rejection_reason": "",
         "assumptions": {
             "source": "Tangible book value per share (liquidation floor)",
-            "total_equity": total_equity,
+            "tangible_equity": tangible_equity,
             "shares_outstanding": shares_outstanding,
         },
         "dcf": dcf_like,
@@ -1691,9 +1702,9 @@ def _equity_value_to_price(equity_value_millions: float | None, shares_outstandi
     return float(equity_value_millions) * 1_000_000 / float(shares_outstanding)
 
 
-def _tangible_book_per_share(total_equity: float | None, shares_outstanding: float | None) -> float | None:
-    """Return book value per share from latest balance-sheet equity."""
-    return _equity_value_to_price(total_equity, shares_outstanding)
+def _tangible_book_per_share(tangible_equity: float | None, shares_outstanding: float | None) -> float | None:
+    """Return tangible book value per share (equity - goodwill - intangibles) / shares."""
+    return _equity_value_to_price(tangible_equity, shares_outstanding)
 
 
 def _valuation_output(implied_price: float | None, current_price: float | None) -> dict[str, Any]:

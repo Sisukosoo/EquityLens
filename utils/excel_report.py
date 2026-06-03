@@ -893,19 +893,19 @@ def _write_tangible_book_tier_section(sheet, start_row: int, tier: dict[str, Any
     _subheader(sheet[f"A{start_row}"])
     assumptions = tier.get("assumptions") or {}
     rows = [
-        ("Total equity", assumptions.get("total_equity")),
+        ("Tangible equity (equity - goodwill - intangibles)", assumptions.get("tangible_equity")),
         ("Shares outstanding", assumptions.get("shares_outstanding") / 1_000_000 if assumptions.get("shares_outstanding") else None),
-        ("Book value/share", (tier.get("dcf") or {}).get("implied_price")),
-        ("Source", "Latest balance sheet equity / shares"),
+        ("Tangible book value/share", (tier.get("dcf") or {}).get("implied_price")),
+        ("Source", "(Latest balance sheet equity - goodwill - intangibles) / shares"),
         ("Status", "Used as primary result" if tier.get("selected") else "Reference"),
     ]
     for row_idx, (label, value) in enumerate(rows, start=start_row + 1):
         sheet[f"A{row_idx}"], sheet[f"B{row_idx}"] = label, value
-        if label == "Total equity":
+        if label == "Tangible equity (equity - goodwill - intangibles)":
             _money(sheet[f"B{row_idx}"], currency)
         elif label == "Shares outstanding":
             sheet[f"B{row_idx}"].number_format = '#,##0.00 "M"'
-        elif label == "Book value/share":
+        elif label == "Tangible book value/share":
             _price(sheet[f"B{row_idx}"], currency)
             if tier.get("selected"):
                 _result(sheet[f"B{row_idx}"])

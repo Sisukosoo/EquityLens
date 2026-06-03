@@ -501,7 +501,7 @@ def test_european_tier4_multiples_use_correct_damodaran_urls_and_parse(monkeypat
         net_debt=0.0,
         shares_outstanding=1_000_000.0,
         current_price=100.0,
-        total_equity=80.0,
+        tangible_equity=80.0,
     )
 
     assert calls == [
@@ -538,7 +538,7 @@ def test_multiples_tier_allows_limited_one_of_three_available(monkeypatch):
         net_debt=0.0,
         shares_outstanding=1_000_000.0,
         current_price=60.0,
-        total_equity=80.0,
+        tangible_equity=80.0,
     )
 
     assert tier["accepted"] is True

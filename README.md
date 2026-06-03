@@ -113,7 +113,7 @@ I tested the model across mature, growth, cyclical, transition, and out-of-scope
 | 2 | Smoothed DCF | 3 to 5 year averages for margin, D&A, and CapEx | Positive + within 70% of market |
 | 3 | Sector Benchmark DCF | Damodaran sector EBIT margin, CapEx, and 2.5% growth | Positive + within 70% of market |
 | 4 | Multiples Valuation | Median of sector EV/EBITDA, EV/Sales, and P/Book | Positive + within 70% of market + above 50% of tangible book |
-| 5 | Tangible Book Floor | Total equity / shares outstanding | Used only when Tiers 1 to 4 fail |
+| 5 | Tangible Book Floor | (Total equity − goodwill − intangibles) / shares outstanding | Used only when Tiers 1 to 4 fail |
 
 ### Skip and fallback logic
 
